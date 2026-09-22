@@ -237,8 +237,11 @@ def run_windows_tts(text: str, output: Path) -> bool:
 
 
 def run_tts(text: str, output: Path) -> bool:
-    if os.getenv("TTS_ENGINE", "windows").lower() == "windows" and run_windows_tts(text, output):
-        return True
+    engine = os.getenv("TTS_ENGINE", "windows").lower()
+    if engine == "windows":
+        return run_windows_tts(text, output)
+    if engine in {"none", "off", "disabled"}:
+        return False
     try:
         import asyncio
         import edge_tts

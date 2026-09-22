@@ -36,7 +36,7 @@ TTS_ENGINE=windows
 WINDOWS_TTS_VOICE=
 ```
 
-默认使用 Windows 本地语音，不需要访问微软 Edge TTS 网络服务。`WINDOWS_TTS_VOICE` 留空时会自动选择已安装的中文语音。没有 `OPENAI_API_KEY` 时会使用安全的本地模板脚本；本地语音不可用时会尝试 Edge TTS，最终失败则生成无旁白视频。
+默认使用 Windows 本地语音，不需要访问微软 Edge TTS 网络服务。`WINDOWS_TTS_VOICE` 留空时会自动选择已安装的中文语音。没有 `OPENAI_API_KEY` 时会使用安全的本地模板脚本；本地语音不可用时会生成无旁白视频。若要显式使用 Edge TTS，可设置 `TTS_ENGINE=edge`。
 
 ## 常用参数
 
