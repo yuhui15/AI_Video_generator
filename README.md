@@ -2,7 +2,7 @@
 
 一个将公开网页中的 looksmaxxing 相关内容整理成短视频的 Python MVP：
 
-1. 从 Google News RSS（不可用时回退到 Bing News RSS，或使用自定义 RSS）获取公开文章
+1. 从 Google News RSS（中文和英文查询）获取公开文章，不可用时回退到 Bing News RSS，或使用自定义 RSS
 2. 提取文章正文、去重并保留来源链接
 3. 使用 OpenAI-compatible API 改写为 60 秒以内的中文短视频脚本
 4. 使用 Edge TTS 生成旁白
@@ -32,9 +32,11 @@ OPENAI_API_KEY=your-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 TTS_VOICE=zh-CN-YunxiNeural
+TTS_ENGINE=windows
+WINDOWS_TTS_VOICE=
 ```
 
-没有 `OPENAI_API_KEY` 时会使用安全的本地模板脚本；没有 `edge-tts` 或网络不可用时会生成无旁白视频而不是静默失败。
+默认使用 Windows 本地语音，不需要访问微软 Edge TTS 网络服务。`WINDOWS_TTS_VOICE` 留空时会自动选择已安装的中文语音。没有 `OPENAI_API_KEY` 时会使用安全的本地模板脚本；本地语音不可用时会尝试 Edge TTS，最终失败则生成无旁白视频。
 
 ## 常用参数
 
@@ -42,7 +44,10 @@ TTS_VOICE=zh-CN-YunxiNeural
 python generate_video.py --topic "护肤误区" --max-articles 5 --duration 60
 python generate_video.py --rss-url "https://example.com/feed.xml"
 python generate_video.py --no-llm --output output\demo.mp4
+python generate_video.py --no-tts --output output\silent-demo.mp4
 ```
+
+如果只想跳过 Gemini，使用 `--no-llm`；如果不需要任何旁白，使用 `--no-tts`。Windows 本地语音由系统语音包提供，可在 Windows 设置的“时间和语言 → 语音”中安装中文语音。
 
 ## 内容边界
 

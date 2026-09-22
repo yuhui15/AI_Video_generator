@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 DEFAULT_RSS = "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+ENGLISH_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 FALLBACK_RSS = "https://www.bing.com/news/search?q={query}&format=rss"
 USER_AGENT = "LooksmaxxingVideoGenerator/1.0 (+public-content-only)"
 WIDTH, HEIGHT = 1080, 1920
@@ -47,9 +48,12 @@ def fetch_articles(topic: str, max_articles: int, rss_url: str | None) -> list[A
     articles: list[Article] = []
     seen: set[str] = set()
     queries = [f"looksmaxxing {topic}", f"looksmaxxing {topic.split()[0]}"] if not rss_url else [topic]
-    urls = [rss_url] if rss_url else [
-        DEFAULT_RSS.format(query=quote_plus(query)) for query in queries
-    ] + [FALLBACK_RSS.format(query=quote_plus("looksmaxxing " + topic))]
+    urls = [rss_url] if rss_url else (
+        [DEFAULT_RSS.format(query=quote_plus(query)) for query in queries]
+        + [ENGLISH_RSS.format(query=quote_plus("looksmaxxing skincare hairstyle"))]
+        + [FALLBACK_RSS.format(query=quote_plus("looksmaxxing " + topic))]
+    )
+    failures: list[str] = []
     for url in urls:
         try:
             response = requests.get(
@@ -60,7 +64,10 @@ def fetch_articles(topic: str, max_articles: int, rss_url: str | None) -> list[A
             response.raise_for_status()
             feed = feedparser.parse(response.content)
         except requests.RequestException as exc:
-            print(f"Warning: RSS source unavailable ({url}): {exc}", file=sys.stderr)
+            failures.append(f"{url}: {exc}")
+            continue
+        if feed.bozo and not feed.entries:
+            failures.append(f"{url}: invalid RSS ({feed.bozo_exception})")
             continue
         for entry in feed.entries:
             link = str(entry.get("link", "")).strip()
@@ -79,6 +86,10 @@ def fetch_articles(topic: str, max_articles: int, rss_url: str | None) -> list[A
             articles.append(Article(title, link, summary[:600], source))
             if len(articles) >= max_articles:
                 return articles
+    if failures:
+        print("RSS sources failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
     return articles
 
 
@@ -189,7 +200,45 @@ def make_card(scene: Scene, index: int, total: int, output: Path) -> None:
     image.save(output)
 
 
+def run_windows_tts(text: str, output: Path) -> bool:
+    if os.name != "nt":
+        return False
+    text_file = output.with_suffix(".txt")
+    text_file.write_text(text, encoding="utf-8")
+    script = (
+        "Add-Type -AssemblyName System.Speech; "
+        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+        "$preferred = $env:WINDOWS_TTS_VOICE; "
+        "$voice = $s.GetInstalledVoices() | Where-Object { "
+        "$_.VoiceInfo.Name -eq $preferred -or $_.VoiceInfo.Culture.Name -like 'zh-*' } | "
+        "Select-Object -First 1; "
+        "if ($null -ne $voice) { $s.SelectVoice($voice.VoiceInfo.Name) }; "
+        f"$s.SetOutputToWaveFile('{output.resolve()}'); "
+        f"$s.Speak((Get-Content -Raw -LiteralPath '{text_file.resolve()}')); "
+        "$s.Dispose()"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 0:
+            return True
+        detail = result.stderr.strip() or result.stdout.strip() or "未找到可用的 Windows 语音"
+        print(f"Warning: Windows TTS unavailable: {detail}", file=sys.stderr)
+    except OSError as exc:
+        print(f"Warning: Windows TTS unavailable: {exc}", file=sys.stderr)
+    finally:
+        text_file.unlink(missing_ok=True)
+    output.unlink(missing_ok=True)
+    return False
+
+
 def run_tts(text: str, output: Path) -> bool:
+    if os.getenv("TTS_ENGINE", "windows").lower() == "windows" and run_windows_tts(text, output):
+        return True
     try:
         import asyncio
         import edge_tts
@@ -198,9 +247,10 @@ def run_tts(text: str, output: Path) -> bool:
             await edge_tts.Communicate(text, os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")).save(str(output))
 
         asyncio.run(save())
-        return output.exists()
-    except (ImportError, OSError, RuntimeError) as exc:
-        print(f"Warning: TTS unavailable, continuing without narration: {exc}", file=sys.stderr)
+        return output.exists() and output.stat().st_size > 0
+    except Exception as exc:
+        output.unlink(missing_ok=True)
+        print(f"Warning: online TTS unavailable, continuing without narration: {exc}", file=sys.stderr)
         return False
 
 
@@ -211,7 +261,7 @@ def compose(cards: list[Path], audio: list[Path], output: Path, work: Path, max_
     for index, card in enumerate(cards):
         clip = work / f"clip_{index:03d}.mp4"
         duration = 5
-        if audio[index].exists():
+        if audio[index].exists() and audio[index].stat().st_size > 0:
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(audio[index])],
                 capture_output=True, text=True, check=False,
@@ -223,16 +273,24 @@ def compose(cards: list[Path], audio: list[Path], output: Path, work: Path, max_
             command = ["ffmpeg", "-y", "-loop", "1", "-i", str(card), "-i", str(audio[index]), "-t", str(duration), "-vf", "format=yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip)]
         else:
             command = ["ffmpeg", "-y", "-loop", "1", "-i", str(card), "-t", str(duration), "-vf", "format=yuv420p", "-c:v", "libx264", "-an", str(clip)]
-        subprocess.run(command, check=True, capture_output=True)
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            error = exc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"FFmpeg 无法处理场景 {index + 1}：{error}") from exc
         clips.append(clip)
     concat = work / "concat.txt"
     concat.write_text("\n".join(f"file '{p.resolve().as_posix()}'" for p in clips), encoding="utf-8")
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
-         "-t", str(max_duration), "-c", "copy", str(output)],
-        check=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+             "-t", str(max_duration), "-c", "copy", str(output)],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        error = exc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg 无法合并视频：{error}") from exc
 
 
 def main() -> int:
@@ -243,6 +301,7 @@ def main() -> int:
     parser.add_argument("--max-articles", type=int, default=5)
     parser.add_argument("--output", default="output/looksmaxxing.mp4")
     parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--no-tts", action="store_true", help="跳过在线旁白生成，使用无声视频")
     parser.add_argument("--duration", type=int, default=60, help="最终视频最长时长（秒）")
     args = parser.parse_args()
     if args.max_articles < 1 or args.max_articles > 20:
@@ -261,9 +320,10 @@ def main() -> int:
     cards, audio = [], []
     for index, scene in enumerate(scenes):
         card = work / f"card_{index:03d}.png"
-        sound = work / f"voice_{index:03d}.mp3"
+        sound = work / f"voice_{index:03d}.wav"
         make_card(scene, index, len(scenes), card)
-        run_tts(scene.narration, sound)
+        if not args.no_tts:
+            run_tts(scene.narration, sound)
         cards.append(card)
         audio.append(sound)
     output = Path(args.output)
