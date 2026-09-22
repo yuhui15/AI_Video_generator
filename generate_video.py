@@ -188,7 +188,7 @@ def run_tts(text: str, output: Path) -> bool:
         return False
 
 
-def compose(cards: list[Path], audio: list[Path], output: Path, work: Path) -> None:
+def compose(cards: list[Path], audio: list[Path], output: Path, work: Path, max_duration: int) -> None:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg is required. Install it and ensure `ffmpeg` is in PATH.")
     clips: list[Path] = []
@@ -211,7 +211,12 @@ def compose(cards: list[Path], audio: list[Path], output: Path, work: Path) -> N
         clips.append(clip)
     concat = work / "concat.txt"
     concat.write_text("\n".join(f"file '{p.resolve().as_posix()}'" for p in clips), encoding="utf-8")
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(output)], check=True, capture_output=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+         "-t", str(max_duration), "-c", "copy", str(output)],
+        check=True,
+        capture_output=True,
+    )
 
 
 def main() -> int:
@@ -222,10 +227,12 @@ def main() -> int:
     parser.add_argument("--max-articles", type=int, default=5)
     parser.add_argument("--output", default="output/looksmaxxing.mp4")
     parser.add_argument("--no-llm", action="store_true")
-    parser.add_argument("--duration", type=int, default=60, help="保留参数，脚本长度由场景旁白决定")
+    parser.add_argument("--duration", type=int, default=60, help="最终视频最长时长（秒）")
     args = parser.parse_args()
     if args.max_articles < 1 or args.max_articles > 20:
         parser.error("--max-articles must be between 1 and 20")
+    if args.duration < 5 or args.duration > 600:
+        parser.error("--duration must be between 5 and 600 seconds")
     work = Path(args.output).parent / "work"
     work.mkdir(parents=True, exist_ok=True)
     articles = fetch_articles(args.topic, args.max_articles, args.rss_url)
@@ -243,7 +250,7 @@ def main() -> int:
         audio.append(sound)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    compose(cards, audio, output, work)
+    compose(cards, audio, output, work, args.duration)
     (output.parent / "sources.json").write_text(json.dumps([a.__dict__ for a in articles], ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"完成：{output.resolve()}")
     print(f"来源清单：{(output.parent / 'sources.json').resolve()}")
