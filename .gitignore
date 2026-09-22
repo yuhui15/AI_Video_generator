@@ -1,0 +1,33 @@
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Generated video assets and intermediate files
+output/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+
+# Local tooling and OS files
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db

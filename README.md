@@ -2,7 +2,7 @@
 
 一个将公开网页中的 looksmaxxing 相关内容整理成短视频的 Python MVP：
 
-1. 从 Google News RSS（或自定义 RSS）获取公开文章
+1. 从 Google News RSS（不可用时回退到 Bing News RSS，或使用自定义 RSS）获取公开文章
 2. 提取文章正文、去重并保留来源链接
 3. 使用 OpenAI-compatible API 改写为 60 秒以内的中文短视频脚本
 4. 使用 Edge TTS 生成旁白

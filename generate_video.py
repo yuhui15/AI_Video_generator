@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 DEFAULT_RSS = "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+FALLBACK_RSS = "https://www.bing.com/news/search?q={query}&format=rss"
 USER_AGENT = "LooksmaxxingVideoGenerator/1.0 (+public-content-only)"
 WIDTH, HEIGHT = 1080, 1920
 
@@ -43,26 +44,41 @@ class Scene:
 
 
 def fetch_articles(topic: str, max_articles: int, rss_url: str | None) -> list[Article]:
-    url = rss_url or DEFAULT_RSS.format(query=quote_plus(f"looksmaxxing {topic}"))
-    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
-    response.raise_for_status()
-    feed = feedparser.parse(response.content)
     articles: list[Article] = []
     seen: set[str] = set()
-    for entry in feed.entries:
-        link = str(entry.get("link", "")).strip()
-        title = BeautifulSoup(str(entry.get("title", "")), "html.parser").get_text(" ", strip=True)
-        if not link or not title or link in seen:
+    queries = [f"looksmaxxing {topic}", f"looksmaxxing {topic.split()[0]}"] if not rss_url else [topic]
+    urls = [rss_url] if rss_url else [
+        DEFAULT_RSS.format(query=quote_plus(query)) for query in queries
+    ] + [FALLBACK_RSS.format(query=quote_plus("looksmaxxing " + topic))]
+    for url in urls:
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, application/xml"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
+        except requests.RequestException as exc:
+            print(f"Warning: RSS source unavailable ({url}): {exc}", file=sys.stderr)
             continue
-        seen.add(link)
-        summary = BeautifulSoup(
-            str(entry.get("summary", entry.get("description", ""))),
-            "html.parser",
-        ).get_text(" ", strip=True)
-        source = str(entry.get("source", {}).get("title", "")) or link.split("/")[2]
-        articles.append(Article(title, link, summary[:600], source))
-        if len(articles) >= max_articles:
-            break
+        for entry in feed.entries:
+            link = str(entry.get("link", "")).strip()
+            title = BeautifulSoup(str(entry.get("title", "")), "html.parser").get_text(" ", strip=True)
+            if not link or not title or link in seen:
+                continue
+            seen.add(link)
+            summary = BeautifulSoup(
+                str(entry.get("summary", entry.get("description", ""))),
+                "html.parser",
+            ).get_text(" ", strip=True)
+            source_data = entry.get("source", {})
+            source = str(source_data.get("title", "")) if hasattr(source_data, "get") else ""
+            if not source:
+                source = link.split("/")[2] if "://" in link else "公开 RSS"
+            articles.append(Article(title, link, summary[:600], source))
+            if len(articles) >= max_articles:
+                return articles
     return articles
 
 
@@ -237,7 +253,9 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     articles = fetch_articles(args.topic, args.max_articles, args.rss_url)
     if not articles:
-        raise RuntimeError("没有获取到公开文章，请检查网络或 RSS 地址。")
+        raise RuntimeError(
+            "没有获取到公开文章。请检查网络连接，或使用 --rss-url 指定可访问的 RSS 地址。"
+        )
     texts = [extract_text(article) for article in articles]
     scenes = fallback_scenes(args.topic, articles) if args.no_llm else call_llm(args.topic, articles, texts)
     cards, audio = [], []
