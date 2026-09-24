@@ -71,8 +71,14 @@ def allowed_by_robots(url: str, cache: dict[str, urllib.robotparser.RobotFilePar
         parser = urllib.robotparser.RobotFileParser()
         parser.set_url(urljoin(origin, "/robots.txt"))
         try:
-            parser.read()
-        except OSError:
+            response = requests.get(
+                urljoin(origin, "/robots.txt"),
+                headers={"User-Agent": USER_AGENT},
+                timeout=20,
+            )
+            response.raise_for_status()
+            parser.parse(response.text.splitlines())
+        except (OSError, requests.RequestException):
             return False
         cache[origin] = parser
     return cache[origin].can_fetch(USER_AGENT, url)
@@ -203,7 +209,7 @@ def collect_forum_text(max_articles: int, delay: float = 0.8) -> list[CollectedA
                 for loc in sitemap_soup.find_all("loc")
                 if loc.get_text(strip=True).startswith(base_url)
             ]
-            for child_sitemap in sitemap_pages[:2]:
+            for child_sitemap in sitemap_pages[:3]:
                 if not allowed_by_robots(child_sitemap, robots_cache):
                     continue
                 child_response = session.get(child_sitemap, timeout=20)
@@ -213,6 +219,7 @@ def collect_forum_text(max_articles: int, delay: float = 0.8) -> list[CollectedA
                     loc.get_text(strip=True)
                     for loc in child_soup.find_all("loc")
                     if loc.get_text(strip=True).startswith(base_url)
+                    and "/threads/" in urlparse(loc.get_text(strip=True)).path
                 )
         except requests.RequestException as exc:
             print(f"Warning: forum sitemap unavailable: {exc}", file=sys.stderr)
@@ -249,7 +256,8 @@ def collect_forum_text(max_articles: int, delay: float = 0.8) -> list[CollectedA
         )
         text = clean(extracted or soup.get_text(" ", strip=True), 5000)
         title = clean(soup.title.get_text(" ", strip=True) if soup.title else page_url, 300)
-        if len(text) >= 80:
+        is_thread = "/threads/" in parsed.path
+        if is_thread and len(text) >= 80:
             results.append(CollectedArticle(
                 title=title,
                 url=page_url,
