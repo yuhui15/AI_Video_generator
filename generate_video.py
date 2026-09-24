@@ -55,13 +55,13 @@ class PhotoAsset:
 
 
 def search_wikimedia_photos(topic: str, limit: int) -> list[PhotoAsset]:
-    """Find openly licensed Wikimedia Commons thumbnails for the visual video."""
+    """Find supermodel or looksmaxxing-related public image candidates."""
     queries = [
-        f"male fashion model {topic}",
-        "male fashion model portrait",
-        "male model hairstyle",
-        "male model skincare",
-        "fashion model editorial portrait",
+        f"supermodel {topic}",
+        "male supermodel portrait",
+        "supermodel editorial portrait",
+        "looksmaxxing forum",
+        "looksmaxxing forum hairstyle",
     ]
     assets: list[PhotoAsset] = []
     seen: set[str] = set()
@@ -101,7 +101,7 @@ def search_wikimedia_photos(topic: str, limit: int) -> list[PhotoAsset]:
             if len(assets) >= limit:
                 return assets
     if not assets:
-        raise RuntimeError("没有找到可用的 Wikimedia Commons 图片，请检查网络或调整主题。")
+        raise RuntimeError("没有找到超模或 looksmaxxing 相关图片，请检查网络或调整主题。")
     return assets
 
 
@@ -139,11 +139,11 @@ def build_photo_video(topic: str, work: Path, output: Path, bgm: Path, duration:
     assets = search_wikimedia_photos(topic, count)
     photos = download_photos(assets, work)
     titles = [
-        f"{topic}：镜头感与整体风格",
-        "Looksmaxxing：先看发型与轮廓表达",
-        "男模风格：清洁、肤感与光线",
-        "高级感来自比例、姿态与穿搭",
-        "参考灵感，不等于统一审美标准",
+        f"{topic}：超模风格参考",
+        "Looksmaxxing 论坛图片参考",
+        "超模肖像：发型与镜头表现",
+        "Looksmaxxing 社区视觉案例",
+        "仅作参考，不代表统一审美标准",
     ]
     cards: list[Path] = []
     audio = [work / f"empty_{index:03d}.wav" for index in range(len(photos))]
@@ -710,7 +710,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--i2v-image-dir",
-        help="I2V 输入图片目录；不提供时按主题从 Wikimedia Commons 下载图片",
+        help="I2V 输入图片目录；不提供时按超模/looksmaxxing 关键词从 Wikimedia Commons 下载图片",
     )
     parser.add_argument(
         "--photo-video",

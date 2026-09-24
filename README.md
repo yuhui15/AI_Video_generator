@@ -143,7 +143,7 @@ Colab 默认使用图片加文字的 I2V 模式。将自己的 JPG、PNG 或 WEB
 MyDrive/AI_Video_generator/input_images/
 ```
 
-如果该目录为空或不存在，程序会根据主题自动下载 Wikimedia Commons 缩略图。首次下载模型可以在 Colab 中执行：
+如果该目录为空或不存在，程序会只使用“supermodel”或“looksmaxxing forum”关键词从 Wikimedia Commons 搜索缩略图。程序不会绕过论坛登录、验证码、robots.txt 或反爬限制；论坛图片的授权和肖像权也不确定，因此如需使用特定论坛图片，请先确认许可后手动放入 `input_images`。首次下载模型可以在 Colab 中执行：
 
 ```python
 from huggingface_hub import snapshot_download
