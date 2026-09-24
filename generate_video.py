@@ -21,6 +21,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
+from collect_content import collect
+
 
 DEFAULT_RSS = "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 ENGLISH_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
@@ -42,6 +44,253 @@ class Scene:
     title: str
     narration: str
     bullets: list[str]
+
+
+@dataclass
+class PhotoAsset:
+    title: str
+    image_url: str
+    page_url: str
+    license: str
+
+
+def search_wikimedia_photos(topic: str, limit: int) -> list[PhotoAsset]:
+    """Find openly licensed Wikimedia Commons thumbnails for the visual video."""
+    queries = [
+        f"male fashion model {topic}",
+        "male fashion model portrait",
+        "male model hairstyle",
+        "male model skincare",
+        "fashion model editorial portrait",
+    ]
+    assets: list[PhotoAsset] = []
+    seen: set[str] = set()
+    for query in queries:
+        response = requests.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrnamespace": 6,
+                "gsrlimit": min(limit, 10),
+                "prop": "imageinfo|info",
+                "iiprop": "url|extmetadata",
+                "iiurlwidth": 720,
+                "inprop": "url",
+                "format": "json",
+                "origin": "*",
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=30,
+        )
+        response.raise_for_status()
+        for page in response.json().get("query", {}).get("pages", {}).values():
+            info = page.get("imageinfo", [{}])[0]
+            thumbnail = info.get("thumburl")
+            original = info.get("descriptionurl") or page.get("fullurl")
+            if not thumbnail or not original or thumbnail in seen:
+                continue
+            metadata = info.get("extmetadata", {})
+            license_name = (
+                metadata.get("LicenseShortName", {}).get("value")
+                or "Wikimedia Commons license; verify attribution"
+            )
+            assets.append(PhotoAsset(page.get("title", "Wikimedia image"), thumbnail, original, license_name))
+            seen.add(thumbnail)
+            if len(assets) >= limit:
+                return assets
+    if not assets:
+        raise RuntimeError("没有找到可用的 Wikimedia Commons 图片，请检查网络或调整主题。")
+    return assets
+
+
+def download_photos(assets: list[PhotoAsset], work: Path) -> list[Path]:
+    photos: list[Path] = []
+    for index, asset in enumerate(assets):
+        destination = work / f"photo_{index:03d}.jpg"
+        response = requests.get(asset.image_url, headers={"User-Agent": USER_AGENT}, timeout=30)
+        response.raise_for_status()
+        destination.write_bytes(response.content)
+        photos.append(destination)
+    return photos
+
+
+def make_photo_card(photo: Path, title: str, index: int, total: int, output: Path) -> None:
+    image = Image.open(photo).convert("RGB")
+    image.thumbnail((WIDTH, HEIGHT))
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), (12, 16, 27))
+    x = (WIDTH - image.width) // 2
+    y = 130 + (HEIGHT - 260 - image.height) // 2
+    canvas.paste(image, (x, y))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.rectangle((0, 0, WIDTH, 230), fill=(8, 12, 22, 220))
+    draw.rectangle((0, HEIGHT - 300, WIDTH, HEIGHT), fill=(8, 12, 22, 220))
+    draw.text((70, 70), f"LOOKSMAXXING  {index + 1:02d}/{total:02d}", font=font(38), fill=(95, 226, 190))
+    title_lines = textwrap.wrap(title, width=14)
+    y_text = HEIGHT - 250
+    for line in reversed(title_lines):
+        draw.text((70, y_text), line, font=font(62), fill="white", stroke_width=2, stroke_fill=(0, 0, 0))
+        y_text -= 78
+    canvas.convert("RGB").save(output, quality=92)
+
+
+def build_photo_video(topic: str, work: Path, output: Path, bgm: Path, duration: int, count: int) -> None:
+    assets = search_wikimedia_photos(topic, count)
+    photos = download_photos(assets, work)
+    titles = [
+        f"{topic}：镜头感与整体风格",
+        "Looksmaxxing：先看发型与轮廓表达",
+        "男模风格：清洁、肤感与光线",
+        "高级感来自比例、姿态与穿搭",
+        "参考灵感，不等于统一审美标准",
+    ]
+    cards: list[Path] = []
+    audio = [work / f"empty_{index:03d}.wav" for index in range(len(photos))]
+    for index, photo in enumerate(photos):
+        card = work / f"photo_card_{index:03d}.jpg"
+        make_photo_card(photo, titles[index % len(titles)], index, len(photos), card)
+        cards.append(card)
+    compose(cards, audio, output, work, duration, bgm)
+    (output.parent / "photo_sources.json").write_text(
+        json.dumps([asset.__dict__ for asset in assets], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def generate_hf_video_clips(scenes: list[Scene], work: Path) -> list[Path]:
+    """Generate short text-to-video clips through Hugging Face Inference API."""
+    token = os.getenv("HF_TOKEN")
+    if not token:
+        raise RuntimeError("缺少 HF_TOKEN。请在 .env 中设置 Hugging Face User Access Token。")
+    model = os.getenv(
+        "HF_VIDEO_MODEL",
+        "Lightricks/LTX-Video-0.9.8-13B-distilled",
+    )
+    provider = os.getenv("HF_PROVIDER", "auto")
+    try:
+        from huggingface_hub import InferenceClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 huggingface_hub，请运行 .venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+        ) from exc
+    client = InferenceClient(model=model, provider=provider, token=token, timeout=600)
+    clips: list[Path] = []
+    for index, scene in enumerate(scenes):
+        prompt = (
+            "Vertical 9:16 cinematic educational short video, tasteful editorial style, "
+            "abstract adult male grooming and healthy lifestyle visuals, no real person likeness, "
+            "no logos, no text, no medical claims. " + scene.narration
+        )
+        output = work / f"ai_scene_{index:03d}.mp4"
+        try:
+            video = client.text_to_video(prompt)
+            video_bytes = video if isinstance(video, bytes) else bytes(video)
+            if not video_bytes:
+                raise RuntimeError("服务返回了空视频")
+            output.write_bytes(video_bytes)
+            clips.append(output)
+        except Exception as exc:
+            if isinstance(exc, KeyError) and exc.args == ("video",):
+                detail = (
+                    "Hugging Face 提供商没有返回视频字段。当前模型可能未被所选提供商支持，"
+                    "或提供商需要额度/权限；请在 Hugging Face 模型页确认 Inference Providers 状态。"
+                )
+            else:
+                detail = str(exc).strip()
+            response = getattr(exc, "response", None)
+            if response is not None:
+                status = getattr(response, "status_code", "unknown")
+                body = getattr(response, "text", "") or ""
+                detail = f"HTTP {status}: {body[:1000]}".strip()
+            if not detail:
+                detail = repr(exc)
+            raise RuntimeError(
+                f"Hugging Face 视频生成失败（场景 {index + 1}，模型 {model}，provider={provider}）：{detail}"
+            ) from exc
+    return clips
+
+
+def generate_local_video_clips(scenes: list[Scene], work: Path) -> list[Path]:
+    """Generate short clips locally with the Hugging Face Wan Diffusers pipeline."""
+    model = os.getenv("LOCAL_VIDEO_MODEL", "/content/models/Wan2.1-T2V-1.3B-Diffusers")
+    model_path = Path(model)
+    if not model_path.is_dir():
+        raise RuntimeError(
+            f"本地模型目录不存在：{model_path}。请先在 Colab 挂载或下载模型，"
+            "再将 LOCAL_VIDEO_MODEL 设置为该目录。"
+        )
+    try:
+        import torch
+        from diffusers import WanPipeline
+        from diffusers.utils import export_to_video
+    except ImportError as exc:
+        raise RuntimeError(
+            "本地 AI 视频依赖未安装，请运行 .venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+        ) from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("本地 Wan 视频生成需要 NVIDIA CUDA；当前 PyTorch 未检测到 CUDA。")
+    width = int(os.getenv("LOCAL_VIDEO_WIDTH", "320"))
+    height = int(os.getenv("LOCAL_VIDEO_HEIGHT", "576"))
+    frames = int(os.getenv("LOCAL_VIDEO_FRAMES", "49"))
+    steps = int(os.getenv("LOCAL_VIDEO_STEPS", "12"))
+    dtype = torch.float16
+    try:
+        pipe = WanPipeline.from_pretrained(
+            str(model_path),
+            torch_dtype=dtype,
+            local_files_only=True,
+        )
+        pipe.enable_model_cpu_offload()
+        pipe.vae.enable_tiling()
+        pipe.vae.enable_slicing()
+    except Exception as exc:
+        raise RuntimeError(f"本地模型加载失败（{model}）：{exc}") from exc
+    clips: list[Path] = []
+    for index, scene in enumerate(scenes):
+        prompt = (
+            "cinematic vertical educational video, tasteful abstract adult grooming "
+            "and healthy lifestyle visuals, no real person likeness, no logos, no text, "
+            "no medical claims, " + scene.narration
+        )
+        output = work / f"ai_scene_{index:03d}.mp4"
+        try:
+            result = pipe(
+                prompt=prompt,
+                negative_prompt="blurry, distorted face, extra fingers, watermark, logo, text",
+                width=width,
+                height=height,
+                num_frames=frames,
+                guidance_scale=5.0,
+                num_inference_steps=steps,
+            )
+            export_to_video(result.frames[0], str(output), fps=16)
+            clips.append(output)
+        except Exception as exc:
+            raise RuntimeError(f"本地 Wan 视频生成失败（场景 {index + 1}）：{exc}") from exc
+    return clips
+
+
+def compose_ai_video(clips: list[Path], output: Path, work: Path, bgm: Path, max_duration: int) -> None:
+    concat = work / "ai_concat.txt"
+    concat.write_text(
+        "\n".join(f"file '{clip.resolve().as_posix()}'" for clip in clips),
+        encoding="utf-8",
+    )
+    merged = work / "ai_merged.mp4"
+    commands = [
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+         "-t", str(max_duration), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(merged)],
+        ["ffmpeg", "-y", "-i", str(merged), "-stream_loop", "-1", "-i", str(bgm),
+         "-t", str(max_duration), "-map", "0:v:0", "-map", "1:a:0",
+         "-c:v", "copy", "-c:a", "aac", "-shortest", str(output)],
+    ]
+    for command in commands:
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            error = exc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"FFmpeg 无法合成 AI 视频：{error}") from exc
 
 
 def fetch_articles(topic: str, max_articles: int, rss_url: str | None) -> list[Article]:
@@ -103,6 +352,27 @@ def extract_text(article: Article) -> str:
     except requests.RequestException as exc:
         print(f"Warning: could not fetch {article.url}: {exc}", file=sys.stderr)
     return article.summary
+
+
+def collect_text_articles(
+    topic: str,
+    max_articles: int,
+    rss_url: str | None,
+) -> tuple[list[Article], list[str]]:
+    records = collect(
+        max_articles,
+        delay=0.5,
+        rss_url=rss_url,
+        queries=("looksmaxxing", "PSL facial aesthetics", f"looksmaxxing {topic}"),
+    )
+    articles = [
+        Article(record.title, record.url, record.summary, record.source)
+        for record in records
+        if record.text and len(record.text.strip()) >= 30
+    ]
+    if not articles:
+        raise RuntimeError("采集结果没有可用于脚本生成的文字内容。")
+    return articles, [record.text for record in records if record.text and len(record.text.strip()) >= 30]
 
 
 def call_llm(topic: str, articles: list[Article], texts: list[str]) -> list[Scene]:
@@ -257,7 +527,14 @@ def run_tts(text: str, output: Path) -> bool:
         return False
 
 
-def compose(cards: list[Path], audio: list[Path], output: Path, work: Path, max_duration: int) -> None:
+def compose(
+    cards: list[Path],
+    audio: list[Path],
+    output: Path,
+    work: Path,
+    max_duration: int,
+    bgm: Path | None = None,
+) -> None:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg is required. Install it and ensure `ffmpeg` is in PATH.")
     clips: list[Path] = []
@@ -274,6 +551,13 @@ def compose(cards: list[Path], audio: list[Path], output: Path, work: Path, max_
             except ValueError:
                 pass
             command = ["ffmpeg", "-y", "-loop", "1", "-i", str(card), "-i", str(audio[index]), "-t", str(duration), "-vf", "format=yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip)]
+        elif bgm:
+            command = [
+                "ffmpeg", "-y", "-loop", "1", "-i", str(card),
+                "-stream_loop", "-1", "-i", str(bgm), "-t", str(duration),
+                "-map", "0:v:0", "-map", "1:a:0", "-vf", "format=yuv420p",
+                "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip),
+            ]
         else:
             command = ["ffmpeg", "-y", "-loop", "1", "-i", str(card), "-t", str(duration), "-vf", "format=yuv420p", "-c:v", "libx264", "-an", str(clip)]
         try:
@@ -304,35 +588,118 @@ def main() -> int:
     parser.add_argument("--max-articles", type=int, default=5)
     parser.add_argument("--output", default="output/looksmaxxing.mp4")
     parser.add_argument("--no-llm", action="store_true")
-    parser.add_argument("--no-tts", action="store_true", help="跳过在线旁白生成，使用无声视频")
+    parser.add_argument(
+        "--ai-video",
+        action="store_true",
+        help="使用 Hugging Face API 文本生视频模型，而不是字幕卡片",
+    )
+    parser.add_argument(
+        "--local-ai-video",
+        action="store_true",
+        help="使用本地 Hugging Face Wan 模型生成视频",
+    )
+    parser.add_argument(
+        "--photo-video",
+        action="store_true",
+        help="只用公开授权图片和标题制作视觉视频，不抓取文章文字",
+    )
+    parser.add_argument("--tts", action="store_true", help="启用 Windows 本地旁白，默认关闭")
+    parser.add_argument("--no-tts", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--bgm",
+        default=os.getenv("BGM_PATH", "music\\phonk.mp3"),
+        help="本地背景音乐文件（默认 music\\phonk.mp3），会自动循环并裁剪",
+    )
     parser.add_argument("--duration", type=int, default=60, help="最终视频最长时长（秒）")
+    parser.add_argument("--max-scenes", type=int, default=6, help="最多生成多少个视频场景")
     args = parser.parse_args()
     if args.max_articles < 1 or args.max_articles > 20:
         parser.error("--max-articles must be between 1 and 20")
     if args.duration < 5 or args.duration > 600:
         parser.error("--duration must be between 5 and 600 seconds")
+    if args.max_scenes < 1 or args.max_scenes > 10:
+        parser.error("--max-scenes must be between 1 and 10")
+    bgm = Path(args.bgm)
+    if not bgm.is_file() or bgm.stat().st_size == 0:
+        parser.error(f"必须提供有效的 BGM 文件，当前文件不存在或为空：{bgm}")
+    output = Path(args.output)
+    if output.parent.name.lower() == "output" and output.parent.exists():
+        shutil.rmtree(output.parent)
     work = Path(args.output).parent / "work"
     work.mkdir(parents=True, exist_ok=True)
-    articles = fetch_articles(args.topic, args.max_articles, args.rss_url)
-    if not articles:
-        raise RuntimeError(
-            "没有获取到公开文章。请检查网络连接，或使用 --rss-url 指定可访问的 RSS 地址。"
-        )
-    texts = [extract_text(article) for article in articles]
+    if args.photo_video:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("照片视频合成需要 FFmpeg，请先安装并将 ffmpeg 加入 PATH。")
+        build_photo_video(args.topic, work, output, bgm, args.duration, args.max_scenes)
+        print(f"完成：{output.resolve()}")
+        print(f"图片来源与许可证：{(output.parent / 'photo_sources.json').resolve()}")
+        return 0
+    articles, texts = collect_text_articles(args.topic, args.max_articles, args.rss_url)
     scenes = fallback_scenes(args.topic, articles) if args.no_llm else call_llm(args.topic, articles, texts)
+    scenes = scenes[:args.max_scenes]
+    if args.local_ai_video:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("本地 AI 视频合成需要 FFmpeg，请先安装并将 ffmpeg 加入 PATH。")
+        clips = generate_local_video_clips(scenes, work)
+        compose_ai_video(clips, output, work, bgm, args.duration)
+        (output.parent / "sources.json").write_text(
+            json.dumps(
+                [
+                    {"title": article.title, "url": article.url, "source": article.source,
+                     "text_used_for_script": text}
+                    for article, text in zip(articles, texts)
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"完成：{output.resolve()}")
+        print(f"来源清单：{(output.parent / 'sources.json').resolve()}")
+        return 0
+    if args.ai_video:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("AI 视频合成需要 FFmpeg，请先安装并将 ffmpeg 加入 PATH。")
+        clips = generate_hf_video_clips(scenes, work)
+        compose_ai_video(clips, output, work, bgm, args.duration)
+        (output.parent / "sources.json").write_text(
+            json.dumps(
+                [
+                    {"title": article.title, "url": article.url, "source": article.source,
+                     "text_used_for_script": text}
+                    for article, text in zip(articles, texts)
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"完成：{output.resolve()}")
+        print(f"来源清单：{(output.parent / 'sources.json').resolve()}")
+        return 0
     cards, audio = [], []
     for index, scene in enumerate(scenes):
         card = work / f"card_{index:03d}.png"
         sound = work / f"voice_{index:03d}.wav"
         make_card(scene, index, len(scenes), card)
-        if not args.no_tts:
+        if args.tts and not args.no_tts:
             run_tts(scene.narration, sound)
         cards.append(card)
         audio.append(sound)
-    output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    compose(cards, audio, output, work, args.duration)
-    (output.parent / "sources.json").write_text(json.dumps([a.__dict__ for a in articles], ensure_ascii=False, indent=2), encoding="utf-8")
+    compose(cards, audio, output, work, args.duration, bgm)
+    (output.parent / "sources.json").write_text(
+        json.dumps(
+            [
+                {"title": article.title, "url": article.url, "source": article.source,
+                 "text_used_for_script": text}
+                for article, text in zip(articles, texts)
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"完成：{output.resolve()}")
     print(f"来源清单：{(output.parent / 'sources.json').resolve()}")
     return 0
