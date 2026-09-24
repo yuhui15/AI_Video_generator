@@ -29,6 +29,13 @@ output/
 !music/
 !music/*.mp3
 
+# Keep user-provided, licensed I2V input images trackable
+!input_images/
+!input_images/*.jpg
+!input_images/*.jpeg
+!input_images/*.png
+!input_images/*.webp
+
 # Local tooling and OS files
 .pytest_cache/
 .mypy_cache/
