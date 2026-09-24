@@ -25,6 +25,10 @@ output/
 *.jpg
 *.jpeg
 
+# Keep project-provided, licensed background music trackable
+!music/
+!music/*.mp3
+
 # Local tooling and OS files
 .pytest_cache/
 .mypy_cache/
