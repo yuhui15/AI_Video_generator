@@ -31,11 +31,19 @@ def run(command: list[str], cwd: Path | None = None) -> None:
 
 
 def mount_drive() -> None:
+    if (Path("/content/drive") / "MyDrive").is_dir():
+        print("Google Drive 已挂载。")
+        return
     try:
         from google.colab import drive
     except ImportError as exc:
         raise RuntimeError("请在 Google Colab 中运行此脚本。") from exc
-    drive.mount("/content/drive")
+    raise RuntimeError(
+        "请先在 Colab Notebook 单元格中运行：\n"
+        "from google.colab import drive\n"
+        "drive.mount('/content/drive')\n"
+        "然后再次运行本脚本。"
+    )
 
 
 def clone_or_update_repo() -> None:

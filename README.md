@@ -103,10 +103,18 @@ HF_VIDEO_MODEL=Lightricks/LTX-Video-0.9.8-13B-distilled
 
 仓库提供了 [colab_run.py](./colab_run.py)，用于在 Colab 中挂载 Drive、clone 或更新本仓库、安装 FFmpeg 和 Python 依赖，并从 Drive 加载已经下载好的 Wan 模型。脚本不会自动下载模型，也不会把 API key 写入仓库。
 
-在 Colab 单元格中运行：
+在 Colab 单元格中分两步运行。先在 Notebook 主进程中挂载 Drive：
+
+```python
+from google.colab import drive
+drive.mount("/content/drive")
+```
+
+然后再 clone 并运行脚本：
 
 ```python
 %cd /content
+!rm -rf AI_Video_generator
 !git clone https://github.com/yuhui15/AI_Video_generator.git
 !python /content/AI_Video_generator/colab_run.py
 ```
