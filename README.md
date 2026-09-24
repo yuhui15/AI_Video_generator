@@ -99,6 +99,36 @@ HF_VIDEO_MODEL=Lightricks/LTX-Video-0.9.8-13B-distilled
 
 `--local-ai-video` 仍保留为实验性本地模式，但不会被默认使用。运行前请在 Colab 下载或挂载模型，并将 `LOCAL_VIDEO_MODEL` 设置为本地模型目录；程序使用 `local_files_only=True`，不会自动下载模型。
 
+## Google Colab + Google Drive
+
+仓库提供了 [colab_run.py](./colab_run.py)，用于在 Colab 中挂载 Drive、clone 或更新本仓库、安装 FFmpeg 和 Python 依赖，并从 Drive 加载已经下载好的 Wan 模型。脚本不会自动下载模型，也不会把 API key 写入仓库。
+
+在 Colab 单元格中运行：
+
+```python
+%cd /content
+!git clone https://github.com/yuhui15/AI_Video_generator.git
+!python /content/AI_Video_generator/colab_run.py
+```
+
+首次运行前，将模型放到：
+
+```text
+MyDrive/models/Wan2.1-T2V-1.3B-Diffusers/
+```
+
+并将 BGM 放到：
+
+```text
+MyDrive/AI_Video_generator/music/phonk.mp3
+```
+
+如果仓库已经在 Drive 中，脚本会执行 `git pull --ff-only`。视频输出到：
+
+```text
+MyDrive/AI_Video_generator/output/colab_wan.mp4
+```
+
 ## 图片驱动视频
 
 如果视频模型只支持 `image-to-video`，可以使用 `--photo-video`。该模式不抓取文章正文，也不把网页文字送入 LLM；它只从 Wikimedia Commons 搜索公开图片，下载缩略图，叠加 looksmaxxing 主题标题并添加本地 BGM。图片页面、缩略图地址和许可证会保存到 `output\photo_sources.json`，发布前仍需遵守每张图片的署名和许可证要求。
