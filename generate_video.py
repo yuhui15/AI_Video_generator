@@ -534,10 +534,29 @@ def call_llm(topic: str, articles: list[Article], texts: list[str]) -> list[Scen
 
 
 def fallback_scenes(topic: str, articles: list[Article]) -> list[Scene]:
-    scenes = [Scene("先说结论", f"今天聊聊{topic}。改善状态可以从规律作息、基础清洁和适度运动开始，不必追求不现实的标准。", ["尊重个体差异", "优先选择低风险习惯"])]
+    scenes = [
+        Scene(
+            "先看整体风格",
+            f"今天参考{topic}。画面重点放在整体风格、姿态和镜头表现，不把外貌与人的价值绑定。",
+            ["尊重个体差异", "避免不现实的审美标准"],
+        )
+    ]
     for article in articles[:4]:
         scenes.append(Scene(article.title[:24], article.summary[:100] or "这篇公开内容提供了一个值得核查的观点。", ["查看原文来源", "不要把单一观点当成医疗结论"]))
-    scenes.append(Scene("温和地行动", "把可持续的小习惯放在第一位。如果涉及皮肤、饮食或训练问题，请向合格专业人士咨询。", ["仅供教育参考", "来源链接见视频说明"]))
+    if not articles:
+        scenes.extend(
+            [
+                Scene("发型与轮廓表现", "观察发型、光线和角度如何影响画面表达，不代表真实外貌评价。", ["仅作视觉参考"]),
+                Scene("镜头与姿态", "用自然的轻微动作和稳定镜头呈现人物，避免夸张或贬低性的表达。", ["保持自然动作"]),
+            ]
+        )
+    scenes.append(
+        Scene(
+            "温和地行动",
+            "把可持续的小习惯放在第一位。如果涉及皮肤、饮食或训练问题，请向合格专业人士咨询。",
+            ["仅供教育参考", "来源链接见视频说明"],
+        )
+    )
     return scenes
 
 
@@ -748,7 +767,10 @@ def main() -> int:
         print(f"完成：{output.resolve()}")
         print(f"图片来源与许可证：{(output.parent / 'photo_sources.json').resolve()}")
         return 0
-    articles, texts = collect_text_articles(args.topic, args.max_articles, args.rss_url)
+    if args.no_llm:
+        articles, texts = [], []
+    else:
+        articles, texts = collect_text_articles(args.topic, args.max_articles, args.rss_url)
     scenes = fallback_scenes(args.topic, articles) if args.no_llm else call_llm(args.topic, articles, texts)
     scenes = scenes[:args.max_scenes]
     if args.local_i2v_video and args.local_ai_video:
