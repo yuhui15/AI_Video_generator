@@ -271,6 +271,111 @@ def generate_local_video_clips(scenes: list[Scene], work: Path) -> list[Path]:
     return clips
 
 
+def prepare_i2v_image(image_path: Path, width: int, height: int, output: Path) -> Path:
+    image = Image.open(image_path).convert("RGB")
+    source_ratio = image.width / image.height
+    target_ratio = width / height
+    if source_ratio > target_ratio:
+        crop_width = int(image.height * target_ratio)
+        left = (image.width - crop_width) // 2
+        image = image.crop((left, 0, left + crop_width, image.height))
+    else:
+        crop_height = int(image.width / target_ratio)
+        top = (image.height - crop_height) // 2
+        image = image.crop((0, top, image.width, top + crop_height))
+    image.resize((width, height), Image.Resampling.LANCZOS).save(output, quality=95)
+    return output
+
+
+def generate_local_i2v_video_clips(
+    scenes: list[Scene],
+    work: Path,
+    topic: str,
+    image_dir: Path | None,
+) -> list[Path]:
+    """Generate Wan image-to-video clips from local or openly sourced images."""
+    model = os.getenv("LOCAL_VIDEO_MODEL", "/content/models/Wan2.1-I2V-14B-480P-Diffusers")
+    model_path = Path(model)
+    if not model_path.is_dir():
+        raise RuntimeError(
+            f"本地 I2V 模型目录不存在：{model_path}。请先下载 "
+            "Wan2.1-I2V-14B-480P-Diffusers 并设置 LOCAL_VIDEO_MODEL。"
+        )
+    try:
+        import torch
+        from diffusers import WanImageToVideoPipeline
+        from diffusers.utils import export_to_video
+    except ImportError as exc:
+        raise RuntimeError(
+            "本地 I2V 依赖未安装，请运行 pip install -r requirements.txt。"
+        ) from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("本地 Wan I2V 视频生成需要 NVIDIA CUDA；当前 PyTorch 未检测到 CUDA。")
+
+    width = int(os.getenv("LOCAL_VIDEO_WIDTH", "320"))
+    height = int(os.getenv("LOCAL_VIDEO_HEIGHT", "576"))
+    frames = int(os.getenv("LOCAL_VIDEO_FRAMES", "49"))
+    steps = int(os.getenv("LOCAL_VIDEO_STEPS", "12"))
+    if image_dir is not None:
+        images = sorted(
+            path for path in image_dir.iterdir()
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+        )
+        if not images:
+            raise RuntimeError(f"I2V 图片目录为空：{image_dir}")
+        assets = None
+    else:
+        assets = search_wikimedia_photos(topic, len(scenes))
+        images = download_photos(assets, work)
+        (work / "i2v_sources.json").write_text(
+            json.dumps([asset.__dict__ for asset in assets], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    prepared_images = [
+        prepare_i2v_image(image, width, height, work / f"i2v_input_{index:03d}.jpg")
+        for index, image in enumerate(images)
+    ]
+    try:
+        pipe = WanImageToVideoPipeline.from_pretrained(
+            str(model_path),
+            torch_dtype=torch.float16,
+            local_files_only=True,
+        )
+        pipe.enable_model_cpu_offload()
+        pipe.vae.enable_tiling()
+        pipe.vae.enable_slicing()
+    except Exception as exc:
+        raise RuntimeError(f"本地 Wan I2V 模型加载失败（{model}）：{exc}") from exc
+
+    clips: list[Path] = []
+    for index, scene in enumerate(scenes):
+        image = Image.open(prepared_images[index % len(prepared_images)]).convert("RGB")
+        prompt = (
+            "cinematic vertical educational fashion video, tasteful adult grooming "
+            "and healthy lifestyle visuals, preserve the person's identity and clothing, "
+            "natural subtle movement, no logos, no text, no medical claims. "
+            + scene.narration
+        )
+        output = work / f"i2v_scene_{index:03d}.mp4"
+        try:
+            result = pipe(
+                image=image,
+                prompt=prompt,
+                negative_prompt="blurry, distorted face, deformed body, extra fingers, "
+                "watermark, logo, text, rapid camera shake",
+                width=width,
+                height=height,
+                num_frames=frames,
+                guidance_scale=5.0,
+                num_inference_steps=steps,
+            )
+            export_to_video(result.frames[0], str(output), fps=16)
+            clips.append(output)
+        except Exception as exc:
+            raise RuntimeError(f"本地 Wan I2V 视频生成失败（场景 {index + 1}）：{exc}") from exc
+    return clips
+
+
 def compose_ai_video(clips: list[Path], output: Path, work: Path, bgm: Path, max_duration: int) -> None:
     concat = work / "ai_concat.txt"
     concat.write_text(
@@ -599,6 +704,15 @@ def main() -> int:
         help="使用本地 Hugging Face Wan 模型生成视频",
     )
     parser.add_argument(
+        "--local-i2v-video",
+        action="store_true",
+        help="使用本地 Wan I2V 模型，根据图片和文字生成视频",
+    )
+    parser.add_argument(
+        "--i2v-image-dir",
+        help="I2V 输入图片目录；不提供时按主题从 Wikimedia Commons 下载图片",
+    )
+    parser.add_argument(
         "--photo-video",
         action="store_true",
         help="只用公开授权图片和标题制作视觉视频，不抓取文章文字",
@@ -637,6 +751,31 @@ def main() -> int:
     articles, texts = collect_text_articles(args.topic, args.max_articles, args.rss_url)
     scenes = fallback_scenes(args.topic, articles) if args.no_llm else call_llm(args.topic, articles, texts)
     scenes = scenes[:args.max_scenes]
+    if args.local_i2v_video and args.local_ai_video:
+        parser.error("--local-i2v-video 和 --local-ai-video 不能同时使用")
+    if args.local_i2v_video:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("本地 I2V 视频合成需要 FFmpeg，请先安装并将 ffmpeg 加入 PATH。")
+        image_dir = Path(args.i2v_image_dir) if args.i2v_image_dir else None
+        if image_dir is not None and not image_dir.is_dir():
+            parser.error(f"I2V 图片目录不存在：{image_dir}")
+        clips = generate_local_i2v_video_clips(scenes, work, args.topic, image_dir)
+        compose_ai_video(clips, output, work, bgm, args.duration)
+        (output.parent / "sources.json").write_text(
+            json.dumps(
+                [
+                    {"title": article.title, "url": article.url, "source": article.source,
+                     "text_used_for_script": text}
+                    for article, text in zip(articles, texts)
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"完成：{output.resolve()}")
+        print(f"来源清单：{(output.parent / 'sources.json').resolve()}")
+        return 0
     if args.local_ai_video:
         if not shutil.which("ffmpeg"):
             raise RuntimeError("本地 AI 视频合成需要 FFmpeg，请先安装并将 ffmpeg 加入 PATH。")

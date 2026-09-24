@@ -97,7 +97,7 @@ HF_VIDEO_MODEL=Lightricks/LTX-Video-0.9.8-13B-distilled
 .\.venv\Scripts\python.exe generate_video.py --ai-video --topic "男士基础护肤和发型" --max-scenes 1 --duration 5 --bgm "music\phonk.mp3"
 ```
 
-`--local-ai-video` 仍保留为实验性本地模式，但不会被默认使用。运行前请在 Colab 下载或挂载模型，并将 `LOCAL_VIDEO_MODEL` 设置为本地模型目录；程序使用 `local_files_only=True`，不会自动下载模型。
+`--local-ai-video` 仍保留为文字生视频模式。图片加文字请使用 `--local-i2v-video`，它加载 `Wan2.1-I2V-14B-480P-Diffusers`，并将每个场景的输入图片与提示词一起传给模型。可以用 `--i2v-image-dir` 指定本地图片目录；不指定时，程序会按主题下载 Wikimedia Commons 缩略图，并把来源保存到 `output\work\i2v_sources.json`。运行前请在 Colab 下载或挂载模型，并将 `LOCAL_VIDEO_MODEL` 设置为本地模型目录；程序使用 `local_files_only=True`，不会自动下载模型。
 
 ## Google Colab + Google Drive
 
@@ -122,7 +122,7 @@ drive.mount("/content/drive")
 首次运行前，将模型放到：
 
 ```text
-MyDrive/models/Wan2.1-T2V-1.3B-Diffusers/
+MyDrive/models/Wan2.1-I2V-14B-480P-Diffusers/
 ```
 
 并将 BGM 放到：
@@ -136,6 +136,24 @@ MyDrive/AI_Video_generator/music/phonk.mp3
 ```text
 MyDrive/AI_Video_generator/output/colab_wan.mp4
 ```
+
+Colab 默认使用图片加文字的 I2V 模式。将自己的 JPG、PNG 或 WEBP 图片放到：
+
+```text
+MyDrive/AI_Video_generator/input_images/
+```
+
+如果该目录为空或不存在，程序会根据主题自动下载 Wikimedia Commons 缩略图。首次下载模型可以在 Colab 中执行：
+
+```python
+from huggingface_hub import snapshot_download
+snapshot_download(
+    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
+    local_dir="/content/drive/MyDrive/models/Wan2.1-I2V-14B-480P-Diffusers",
+)
+```
+
+14B I2V 模型需要较多磁盘、系统内存和显存。Colab 入口默认生成 4 个约 5 秒的场景，合成为约 20 秒的视频；Wan I2V 不适合一次直接生成 20 秒单镜头。如果显存不足，降低 `LOCAL_VIDEO_WIDTH`、`LOCAL_VIDEO_HEIGHT`、`LOCAL_VIDEO_FRAMES` 或 `LOCAL_VIDEO_STEPS`。
 
 ## 图片驱动视频
 

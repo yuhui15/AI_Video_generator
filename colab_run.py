@@ -16,13 +16,14 @@ from pathlib import Path
 REPO_URL = "https://github.com/yuhui15/AI_Video_generator.git"
 DRIVE_ROOT = Path("/content/drive/MyDrive")
 REPO_DIR = DRIVE_ROOT / "AI_Video_generator"
-MODEL_DIR = DRIVE_ROOT / "models/Wan2.1-T2V-1.3B-Diffusers"
+MODEL_DIR = DRIVE_ROOT / "models/Wan2.1-I2V-14B-480P-Diffusers"
 BGM_PATH = REPO_DIR / "music/phonk.mp3"
+IMAGE_DIR = REPO_DIR / "input_images"
 
 TOPIC = "男士基础护肤和发型"
-MAX_ARTICLES = 1
-MAX_SCENES = 1
-DURATION = 5
+MAX_ARTICLES = 2
+MAX_SCENES = 4
+DURATION = 20
 
 
 def run(command: list[str], cwd: Path | None = None) -> None:
@@ -66,7 +67,7 @@ def configure_environment() -> None:
     if not MODEL_DIR.is_dir():
         raise RuntimeError(
             f"模型目录不存在：{MODEL_DIR}\n"
-            "请先把 Wan2.1-T2V-1.3B-Diffusers 放到 Google Drive 的 models 目录。"
+            "请先把 Wan2.1-I2V-14B-480P-Diffusers 放到 Google Drive 的 models 目录。"
         )
     if not BGM_PATH.is_file():
         raise RuntimeError(f"BGM 文件不存在：{BGM_PATH}")
@@ -74,7 +75,8 @@ def configure_environment() -> None:
     os.environ["LOCAL_VIDEO_MODEL"] = str(MODEL_DIR)
     os.environ.setdefault("LOCAL_VIDEO_WIDTH", "320")
     os.environ.setdefault("LOCAL_VIDEO_HEIGHT", "576")
-    os.environ.setdefault("LOCAL_VIDEO_FRAMES", "49")
+    # Wan I2V produces short clips; four roughly five-second scenes make a 20-second video.
+    os.environ.setdefault("LOCAL_VIDEO_FRAMES", "81")
     os.environ.setdefault("LOCAL_VIDEO_STEPS", "12")
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -86,7 +88,7 @@ def generate() -> None:
     command = [
         sys.executable,
         "generate_video.py",
-        "--local-ai-video",
+        "--local-i2v-video",
         "--topic",
         TOPIC,
         "--max-articles",
@@ -101,6 +103,8 @@ def generate() -> None:
         "--output",
         str(output),
     ]
+    if IMAGE_DIR.is_dir():
+        command.extend(["--i2v-image-dir", str(IMAGE_DIR)])
     run(command, cwd=REPO_DIR)
     print(f"视频已生成：{output}")
 
