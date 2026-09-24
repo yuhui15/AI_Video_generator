@@ -509,7 +509,10 @@ def collect_text_articles(
         if record.text and len(record.text.strip()) >= 30
     ]
     if not articles:
-        raise RuntimeError("采集结果没有可用于脚本生成的文字内容。")
+        raise RuntimeError(
+            "论坛公开页面没有提取到足够文字。请检查 Colab 网络访问，"
+            "或先使用 --no-llm 测试图片与 Wan I2V 模型；这不是模型下载错误。"
+        )
     return articles, [record.text for record in records if record.text and len(record.text.strip()) >= 30]
 
 

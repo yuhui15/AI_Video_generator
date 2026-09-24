@@ -192,6 +192,30 @@ def collect_forum_text(max_articles: int, delay: float = 0.8) -> list[CollectedA
     results: list[CollectedArticle] = []
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
+    sitemap_url = urljoin(base_url, "sitemap.xml")
+    if allowed_by_robots(sitemap_url, robots_cache):
+        try:
+            sitemap_response = session.get(sitemap_url, timeout=20)
+            sitemap_response.raise_for_status()
+            sitemap_soup = BeautifulSoup(sitemap_response.text, "html.parser")
+            sitemap_pages = [
+                loc.get_text(strip=True)
+                for loc in sitemap_soup.find_all("loc")
+                if loc.get_text(strip=True).startswith(base_url)
+            ]
+            for child_sitemap in sitemap_pages[:2]:
+                if not allowed_by_robots(child_sitemap, robots_cache):
+                    continue
+                child_response = session.get(child_sitemap, timeout=20)
+                child_response.raise_for_status()
+                child_soup = BeautifulSoup(child_response.text, "html.parser")
+                queue.extend(
+                    loc.get_text(strip=True)
+                    for loc in child_soup.find_all("loc")
+                    if loc.get_text(strip=True).startswith(base_url)
+                )
+        except requests.RequestException as exc:
+            print(f"Warning: forum sitemap unavailable: {exc}", file=sys.stderr)
     while queue and len(seen_pages) < 30 and len(results) < max_articles:
         page_url = queue.pop(0).split("#", 1)[0]
         parsed = urlparse(page_url)
