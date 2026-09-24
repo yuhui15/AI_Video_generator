@@ -183,6 +183,64 @@ def collect(
     return results
 
 
+def collect_forum_text(max_articles: int, delay: float = 0.8) -> list[CollectedArticle]:
+    """Collect text from public forum HTML pages without collecting images."""
+    base_url = "https://forum.looksmaxxing.com/"
+    robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+    queue = [base_url]
+    seen_pages: set[str] = set()
+    results: list[CollectedArticle] = []
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    while queue and len(seen_pages) < 30 and len(results) < max_articles:
+        page_url = queue.pop(0).split("#", 1)[0]
+        parsed = urlparse(page_url)
+        if (
+            page_url in seen_pages
+            or parsed.netloc != urlparse(base_url).netloc
+            or "/attachments/" in parsed.path
+            or not allowed_by_robots(page_url, robots_cache)
+        ):
+            continue
+        seen_pages.add(page_url)
+        try:
+            response = session.get(page_url, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            print(f"Warning: forum page unavailable: {page_url} ({exc})", file=sys.stderr)
+            continue
+        soup = BeautifulSoup(response.text, "html.parser")
+        for link in soup.select("a[href]"):
+            href = urljoin(page_url, str(link["href"])).split("#", 1)[0]
+            href_path = urlparse(href).path
+            if (
+                urlparse(href).netloc == parsed.netloc
+                and href not in seen_pages
+                and "/attachments/" not in href_path
+                and "/login/" not in href_path
+            ):
+                queue.append(href)
+        extracted = trafilatura.extract(
+            response.text, include_comments=False, include_tables=False
+        )
+        text = clean(extracted or soup.get_text(" ", strip=True), 5000)
+        title = clean(soup.title.get_text(" ", strip=True) if soup.title else page_url, 300)
+        if len(text) >= 80:
+            results.append(CollectedArticle(
+                title=title,
+                url=page_url,
+                source="forum.looksmaxxing.com",
+                summary=clean(text, 600),
+                text=text,
+                categories=categories_for(f"{title} {text}"),
+                image_urls=[],
+                image_rights="not_collected",
+                collected_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            ))
+        time.sleep(delay)
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-articles", type=int, default=30)

@@ -10,9 +10,11 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
+import urllib.robotparser
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 import requests
@@ -21,7 +23,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
-from collect_content import collect
+from collect_content import collect, collect_forum_text
 
 
 DEFAULT_RSS = "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
@@ -54,55 +56,92 @@ class PhotoAsset:
     license: str
 
 
-def search_wikimedia_photos(topic: str, limit: int) -> list[PhotoAsset]:
-    """Find supermodel or looksmaxxing-related public image candidates."""
-    queries = [
-        f"supermodel {topic}",
-        "male supermodel portrait",
-        "supermodel editorial portrait",
-        "looksmaxxing forum",
-        "looksmaxxing forum hairstyle",
-    ]
+FORUM_URL = "https://forum.looksmaxxing.com/"
+
+
+def allowed_by_robots(url: str, cache: dict[str, urllib.robotparser.RobotFileParser]) -> bool:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    if origin not in cache:
+        parser = urllib.robotparser.RobotFileParser()
+        parser.set_url(urljoin(origin, "/robots.txt"))
+        try:
+            parser.read()
+        except OSError:
+            return False
+        cache[origin] = parser
+    return cache[origin].can_fetch(USER_AGENT, url)
+
+
+def search_forum_photos(limit: int) -> list[PhotoAsset]:
+    """Collect public image metadata from allowed forum HTML pages only."""
+    robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+    queue = [FORUM_URL]
+    seen_pages: set[str] = set()
     assets: list[PhotoAsset] = []
-    seen: set[str] = set()
-    for query in queries:
-        response = requests.get(
-            "https://commons.wikimedia.org/w/api.php",
-            params={
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": query,
-                "gsrnamespace": 6,
-                "gsrlimit": min(limit, 10),
-                "prop": "imageinfo|info",
-                "iiprop": "url|extmetadata",
-                "iiurlwidth": 720,
-                "inprop": "url",
-                "format": "json",
-                "origin": "*",
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=30,
+    seen_images: set[str] = set()
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    while queue and len(seen_pages) < 12 and len(assets) < limit:
+        page_url = queue.pop(0)
+        if page_url in seen_pages or not allowed_by_robots(page_url, robots_cache):
+            continue
+        seen_pages.add(page_url)
+        try:
+            response = session.get(page_url, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            print(f"Warning: forum page unavailable: {page_url} ({exc})", file=sys.stderr)
+            continue
+        soup = BeautifulSoup(response.text, "html.parser")
+        for link in soup.select("a[href]"):
+            href = urljoin(page_url, str(link["href"])).split("#", 1)[0]
+            parsed = urlparse(href)
+            if parsed.netloc == urlparse(FORUM_URL).netloc and href not in seen_pages:
+                if "/attachments/" not in parsed.path and "/login/" not in parsed.path:
+                    queue.append(href)
+        image_urls = []
+        for tag in soup.select('meta[property="og:image"], meta[name="twitter:image"]'):
+            if tag.get("content"):
+                image_urls.append(urljoin(page_url, str(tag["content"])))
+        image_urls.extend(
+            urljoin(page_url, str(tag["src"]))
+            for tag in soup.select("img[src]")
         )
-        response.raise_for_status()
-        for page in response.json().get("query", {}).get("pages", {}).values():
-            info = page.get("imageinfo", [{}])[0]
-            thumbnail = info.get("thumburl")
-            original = info.get("descriptionurl") or page.get("fullurl")
-            if not thumbnail or not original or thumbnail in seen:
+        for image_url in image_urls:
+            parsed = urlparse(image_url)
+            if (
+                parsed.netloc != urlparse(FORUM_URL).netloc
+                or "/attachments/" in parsed.path
+                or image_url in seen_images
+                or not allowed_by_robots(image_url, robots_cache)
+            ):
                 continue
-            metadata = info.get("extmetadata", {})
-            license_name = (
-                metadata.get("LicenseShortName", {}).get("value")
-                or "Wikimedia Commons license; verify attribution"
+            seen_images.add(image_url)
+            assets.append(
+                PhotoAsset(
+                    title=soup.title.get_text(" ", strip=True) if soup.title else "Looksmaxxing forum image",
+                    image_url=image_url,
+                    page_url=page_url,
+                    license="unknown_verify_license_before_use",
+                )
             )
-            assets.append(PhotoAsset(page.get("title", "Wikimedia image"), thumbnail, original, license_name))
-            seen.add(thumbnail)
             if len(assets) >= limit:
-                return assets
+                break
+        time.sleep(0.5)
     if not assets:
-        raise RuntimeError("没有找到超模或 looksmaxxing 相关图片，请检查网络或调整主题。")
+        raise RuntimeError(
+            "论坛公开页面没有找到可抓取图片。该站 robots.txt 禁止 /attachments/，"
+            "请把已获授权的图片手动放入 input_images/。"
+        )
     return assets
+
+
+def search_public_photos(limit: int) -> list[PhotoAsset]:
+    """Use the configured public forum crawler for automatic image inputs."""
+    return search_forum_photos(limit)
 
 
 def download_photos(assets: list[PhotoAsset], work: Path) -> list[Path]:
@@ -136,7 +175,7 @@ def make_photo_card(photo: Path, title: str, index: int, total: int, output: Pat
 
 
 def build_photo_video(topic: str, work: Path, output: Path, bgm: Path, duration: int, count: int) -> None:
-    assets = search_wikimedia_photos(topic, count)
+    assets = search_public_photos(count)
     photos = download_photos(assets, work)
     titles = [
         f"{topic}：超模风格参考",
@@ -290,10 +329,9 @@ def prepare_i2v_image(image_path: Path, width: int, height: int, output: Path) -
 def generate_local_i2v_video_clips(
     scenes: list[Scene],
     work: Path,
-    topic: str,
     image_dir: Path | None,
 ) -> list[Path]:
-    """Generate Wan image-to-video clips from local or openly sourced images."""
+    """Generate Wan image-to-video clips from user-provided local images."""
     model = os.getenv("LOCAL_VIDEO_MODEL", "/content/models/Wan2.1-I2V-14B-480P-Diffusers")
     model_path = Path(model)
     if not model_path.is_dir():
@@ -316,21 +354,17 @@ def generate_local_i2v_video_clips(
     height = int(os.getenv("LOCAL_VIDEO_HEIGHT", "576"))
     frames = int(os.getenv("LOCAL_VIDEO_FRAMES", "49"))
     steps = int(os.getenv("LOCAL_VIDEO_STEPS", "12"))
-    if image_dir is not None:
-        images = sorted(
-            path for path in image_dir.iterdir()
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    if image_dir is None or not image_dir.is_dir():
+        raise RuntimeError(
+            "I2V 必须提供本地图片目录，请将已获授权的图片放入 "
+            "MyDrive/AI_Video_generator/input_images/。"
         )
-        if not images:
-            raise RuntimeError(f"I2V 图片目录为空：{image_dir}")
-        assets = None
-    else:
-        assets = search_wikimedia_photos(topic, len(scenes))
-        images = download_photos(assets, work)
-        (work / "i2v_sources.json").write_text(
-            json.dumps([asset.__dict__ for asset in assets], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    images = sorted(
+        path for path in image_dir.iterdir()
+        if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    if not images:
+        raise RuntimeError(f"I2V 图片目录为空：{image_dir}")
     prepared_images = [
         prepare_i2v_image(image, width, height, work / f"i2v_input_{index:03d}.jpg")
         for index, image in enumerate(images)
@@ -464,11 +498,10 @@ def collect_text_articles(
     max_articles: int,
     rss_url: str | None,
 ) -> tuple[list[Article], list[str]]:
-    records = collect(
-        max_articles,
-        delay=0.5,
-        rss_url=rss_url,
-        queries=("looksmaxxing", "PSL facial aesthetics", f"looksmaxxing {topic}"),
+    records = (
+        collect_forum_text(max_articles)
+        if rss_url is None
+        else collect(max_articles, delay=0.5, rss_url=rss_url, queries=("looksmaxxing",))
     )
     articles = [
         Article(record.title, record.url, record.summary, record.source)
@@ -729,7 +762,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--i2v-image-dir",
-        help="I2V 输入图片目录；不提供时按超模/looksmaxxing 关键词从 Wikimedia Commons 下载图片",
+        help="I2V 输入图片目录；图片必须由用户自行准备并确认有使用权",
     )
     parser.add_argument(
         "--photo-video",
@@ -781,7 +814,7 @@ def main() -> int:
         image_dir = Path(args.i2v_image_dir) if args.i2v_image_dir else None
         if image_dir is not None and not image_dir.is_dir():
             parser.error(f"I2V 图片目录不存在：{image_dir}")
-        clips = generate_local_i2v_video_clips(scenes, work, args.topic, image_dir)
+        clips = generate_local_i2v_video_clips(scenes, work, image_dir)
         compose_ai_video(clips, output, work, bgm, args.duration)
         (output.parent / "sources.json").write_text(
             json.dumps(

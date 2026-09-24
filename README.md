@@ -97,7 +97,7 @@ HF_VIDEO_MODEL=Lightricks/LTX-Video-0.9.8-13B-distilled
 .\.venv\Scripts\python.exe generate_video.py --ai-video --topic "男士基础护肤和发型" --max-scenes 1 --duration 5 --bgm "music\phonk.mp3"
 ```
 
-`--local-ai-video` 仍保留为文字生视频模式。图片加文字请使用 `--local-i2v-video`，它加载 `Wan2.1-I2V-14B-480P-Diffusers`，并将每个场景的输入图片与提示词一起传给模型。可以用 `--i2v-image-dir` 指定本地图片目录；不指定时，程序会按主题下载 Wikimedia Commons 缩略图，并把来源保存到 `output\work\i2v_sources.json`。运行前请在 Colab 下载或挂载模型，并将 `LOCAL_VIDEO_MODEL` 设置为本地模型目录；程序使用 `local_files_only=True`，不会自动下载模型。
+`--local-ai-video` 仍保留为文字生视频模式。图片加文字请使用 `--local-i2v-video`，它加载 `Wan2.1-I2V-14B-480P-Diffusers`，并将每个场景的输入图片与提示词一起传给模型。必须用 `--i2v-image-dir` 指定你自行准备的图片目录；程序不会从论坛自动下载图片。运行前请在 Colab 下载或挂载模型，并将 `LOCAL_VIDEO_MODEL` 设置为本地模型目录；程序使用 `local_files_only=True`，不会自动下载模型。
 
 ## Google Colab + Google Drive
 
@@ -143,7 +143,7 @@ Colab 默认使用图片加文字的 I2V 模式。将自己的 JPG、PNG 或 WEB
 MyDrive/AI_Video_generator/input_images/
 ```
 
-如果该目录为空或不存在，程序会只使用“supermodel”或“looksmaxxing forum”关键词从 Wikimedia Commons 搜索缩略图。程序不会绕过论坛登录、验证码、robots.txt 或反爬限制；论坛图片的授权和肖像权也不确定，因此如需使用特定论坛图片，请先确认许可后手动放入 `input_images`。首次下载模型可以在 Colab 中执行：
+程序只从 `https://forum.looksmaxxing.com/` 的公开 HTML 页面抓取文字，不抓取论坛图片。I2V 必须使用你自行准备并确认有使用权的图片；请将 JPG、PNG 或 WEBP 放入 `input_images`。文字采集遵守该站 `robots.txt`，不会登录、绕过验证码或访问被禁止的路径。首次下载模型可以在 Colab 中执行：
 
 ```python
 from huggingface_hub import snapshot_download
@@ -157,7 +157,7 @@ snapshot_download(
 
 ## 图片驱动视频
 
-如果视频模型只支持 `image-to-video`，可以使用 `--photo-video`。该模式不抓取文章正文，也不把网页文字送入 LLM；它只从 Wikimedia Commons 搜索公开图片，下载缩略图，叠加 looksmaxxing 主题标题并添加本地 BGM。图片页面、缩略图地址和许可证会保存到 `output\photo_sources.json`，发布前仍需遵守每张图片的署名和许可证要求。
+如果视频模型只支持 `image-to-video`，可以使用 `--photo-video`。该模式不抓取文章正文，也不把网页文字送入 LLM；它使用你提供的本地图片，叠加 looksmaxxing 主题标题并添加本地 BGM。发布前仍需核验图片许可和肖像权。
 
 ## 内容边界
 
