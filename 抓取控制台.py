@@ -738,6 +738,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.update_token()
             return
+        if self.path == "/api/rewrite":
+            if not self.is_same_origin_request():
+                self.send_json({"error": "改写请求只允许来自当前本机网页。"}, 403)
+                return
+            self.rewrite_metric_queries()
+            return
         if self.path == "/api/manage/delete":
             self.delete_library_item()
             return
@@ -769,6 +775,72 @@ class Handler(BaseHTTPRequestHandler):
         worker = threading.Thread(target=run_crawler, args=(command, api_key_for_job), daemon=True)
         worker.start()
         self.send_json({"status": "starting"}, 202)
+
+    def rewrite_metric_queries(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_REQUEST_BYTES:
+                raise ValueError("请求内容为空或超过大小限制。")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("请求格式错误。")
+            metric = payload.get("metric")
+            if not isinstance(metric, str) or metric not in METRIC_NAMES:
+                raise ValueError("请选择有效的预设指标。")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+
+        with job_lock:
+            if job["status"] in {"starting", "running"}:
+                self.send_json({"error": "抓取任务运行期间不能改写搜索词。"}, 409)
+                return
+            api_key = mistral_api_key
+        if api_key is None:
+            self.send_json({"error": "请先绑定 Mistral API Key。"}, 400)
+            return
+
+        child_env = os.environ.copy()
+        child_env.pop("HF_TOKEN", None)
+        child_env.pop("HUGGINGFACEHUB_API_TOKEN", None)
+        child_env["MISTRAL_API_KEY"] = api_key
+        try:
+            result = subprocess.run(
+                [sys.executable, str(SCRAPER), "--rewrite-metric", metric],
+                cwd=ROOT,
+                env=child_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=240,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            self.send_json({"error": "调用 Ministral 14B 超时，请检查网络后重试。"}, 504)
+            return
+        except OSError as exc:
+            self.send_json({"error": f"无法启动搜索词改写：{exc}"}, 500)
+            return
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            self.send_json(
+                {"error": f"搜索词改写失败：{detail[-1500:] or '模型调用异常。'}"},
+                502,
+            )
+            return
+        try:
+            queries = json.loads(result.stdout)
+            if (
+                not isinstance(queries, dict)
+                or not isinstance(queries.get("high"), str)
+                or not isinstance(queries.get("low"), str)
+            ):
+                raise ValueError("模型结果中缺少 high / low 搜索词。")
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": f"无法解析模型改写结果：{exc}"}, 502)
+            return
+        self.send_json({"model": "ministral-14b-2512", "queries": queries})
 
     def is_same_origin_request(self) -> bool:
         origin = self.headers.get("Origin")
@@ -844,8 +916,8 @@ class Handler(BaseHTTPRequestHandler):
         threshold = payload.get("threshold")
         target_count = payload.get("target_count")
         output_dir = payload.get("output_dir") or DEFAULT_OUTPUT
-        if mode not in {"metrics", "random_mistral", "custom"}:
-            raise ValueError("请选择手动指标、Mistral 随机抽取或自定义话题模式。")
+        if mode not in {"metrics", "custom"}:
+            raise ValueError("请选择指标改写或自定义话题模式。")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.35 <= threshold <= 0.95:
             raise ValueError("CLIP 严格度必须在 0.35 到 0.95 之间。")
         if isinstance(target_count, bool) or not isinstance(target_count, int) or not 1 <= target_count <= 1000:
@@ -867,21 +939,36 @@ class Handler(BaseHTTPRequestHandler):
                 else Path(output_dir).expanduser().resolve()
             ),
         ]
-        if mode == "random_mistral":
-            command.append("--random-mistral")
-        elif mode == "custom":
+        if mode == "custom":
             topic = payload.get("custom_topic")
             if not isinstance(topic, str) or not topic.strip() or len(topic) > 240:
                 raise ValueError("自定义搜索话题不能为空，且不能超过 240 个字符。")
             command.extend(["--custom-topic", topic.strip()])
         else:
             metrics = payload.get("metrics")
-            if not isinstance(metrics, list) or not metrics:
-                raise ValueError("请至少选择一个指标。")
+            if not isinstance(metrics, list) or len(metrics) != 1:
+                raise ValueError("请选择一个指标。")
             if not all(isinstance(name, str) and name in METRIC_NAMES for name in metrics):
                 raise ValueError("指标列表包含无效选项，请刷新页面后重试。")
-            for name in dict.fromkeys(metrics):
-                command.extend(["--metric", name])
+            rewritten_queries = payload.get("rewritten_queries")
+            if not isinstance(rewritten_queries, dict):
+                raise ValueError("请先改写并确认该指标的 high / low 搜索词。")
+            query_high = rewritten_queries.get("high")
+            query_low = rewritten_queries.get("low")
+            if (
+                not isinstance(query_high, str)
+                or not query_high.strip()
+                or len(query_high) > 300
+                or not isinstance(query_low, str)
+                or not query_low.strip()
+                or len(query_low) > 300
+            ):
+                raise ValueError("改写后的 high / low 搜索词无效。请重新改写。")
+            command.extend([
+                "--metric", metrics[0],
+                "--rewritten-query-high", query_high.strip(),
+                "--rewritten-query-low", query_low.strip(),
+            ])
         return command
 
     def log_message(self, format_string: str, *args: Any) -> None:
