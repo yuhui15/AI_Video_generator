@@ -38,13 +38,9 @@ py -3.11 -m venv .venv
 
 ## 配置 Hugging Face Token
 
-只有使用“随机抽取 + Mistral 7B 改写”时需要 Token。请在将要启动控制台的同一个 PowerShell 窗口中设置：
+只有使用“随机抽取 + Mistral 7B 改写”时需要 Token。在网页选择该模式后，直接在 Hugging Face Token 输入框中粘贴 User Access Token，再点击“绑定 Token”。Token 只保存在运行控制台的本机 Python 进程内存中，随机抓取任务启动时才通过子进程环境变量传入；不会写入项目文件、浏览器存储、URL 或任务日志。关闭控制台服务后 Token 会清除，需要重新输入。
 
-```powershell
-$env:HF_TOKEN = Read-Host "请输入 Hugging Face User Access Token"
-```
-
-创建有权调用所选 Inference Provider 的 Hugging Face User Access Token。Token 只保存在当前 PowerShell 会话的环境变量中；关闭该窗口后需要重新设置。也可以用 `HUGGINGFACEHUB_API_TOKEN` 环境变量替代 `HF_TOKEN`。
+绑定 Token 的接口仅接受当前本机网页的同源请求；页面上的“清除 Token”按钮会立即从服务内存中删除它。Token 不会通过 API 回传，页面只显示是否已绑定。请创建有权调用所选 Hugging Face Inference Provider 的 Token，并避免在不可信设备上输入。
 
 手动选择 63 项或使用自定义搜索话题不需要 Mistral Token。
 
@@ -77,8 +73,8 @@ http://127.0.0.1:8765
 
 ### 随机抽取并由 Mistral 改写
 
-1. 确认已在启动网页的 PowerShell 会话设置 `HF_TOKEN`。
-2. 选择“随机抽 1 项 + Mistral 7B 改写”。
+1. 选择“随机抽 1 项 + Mistral 7B 改写”。
+2. 输入 Hugging Face Token 并点击“绑定 Token”，确认页面显示已绑定。
 3. 设置筛选和保存选项，然后开始抓取。
 
 每次启动任务时，程序从全部 63 项中随机选一项，并调用 `mistralai/Mistral-7B-Instruct-v0.3` 分别改写该指标的 high/low 搜索词。改写结果会显示在任务日志中。如果 Token、模型托管服务或账号额度有问题，任务会报告错误并停止，不会静默切换回原搜索词。
@@ -120,6 +116,10 @@ AI_Video_generator/
 
 自定义话题只有一个 `search/` 级别。若该级别已存在足够数量的图片，脚本会跳过已达标的级别；若想重新收集，请在网页选择新的输出目录，或自行备份后清理对应的结果目录。
 
+## 图片管理页面
+
+网页顶部提供“图片管理”页面，可以查看项目中的 JPG、JPEG、PNG 和 WEBP 图片，单独删除图片，或删除包含图片的整个文件夹。删除前会弹出确认；文件夹删除会移除其中所有内容。`.git`、虚拟环境、模型目录和 `music` 等运行目录会被排除或保护；抓取任务运行期间不允许删除。删除操作不可撤销，请先确认目标路径。
+
 ## 命令行（可选）
 
 列出内置的 63 项指标：
@@ -146,7 +146,7 @@ AI_Video_generator/
 - **页面无法打开**：确认控制台终端仍在运行，并访问 `http://127.0.0.1:8765`。
 - **Chrome/ChromeDriver 启动失败**：确认 Google Chrome 已安装；首次启动时网络可能需要访问 ChromeDriver 下载源。
 - **CLIP 载入或筛选失败**：确认依赖已安装且可访问 Hugging Face。第一次载入会下载模型；模型加载错误会写入抓取日志。
-- **Mistral 认证或 Provider 错误**：确认 `HF_TOKEN` 在启动服务的 PowerShell 会话中有效，并且 Hugging Face 账户可使用该模型的 Inference Provider。
+- **Mistral 认证或 Provider 错误**：确认网页显示 Token 已绑定、Token 有效，并且 Hugging Face 账户可使用该模型的 Inference Provider。
 - **筛选后图片不足**：尝试降低 CLIP 阈值、降低目标数量，或调整搜索词。搜索结果是否充足取决于搜索服务和来源。
 
 ## 图片使用与隐私
