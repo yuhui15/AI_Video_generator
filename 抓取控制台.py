@@ -14,7 +14,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 SCRAPER = ROOT / "自动抓取脚本.py"
-DEFAULT_OUTPUT = r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张"
+DEFAULT_OUTPUT = ROOT / "抓取结果"
 MAX_REQUEST_BYTES = 64 * 1024
 job_lock = threading.Lock()
 job: dict[str, Any] = {
@@ -141,8 +141,9 @@ PAGE = r"""<!doctype html>
           <input id="target-count" type="number" min="1" max="1000" value="20">
         </div>
         <div class="field">
-          <label for="output-dir">图片保存目录</label>
-          <input id="output-dir" type="text" value="C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张">
+          <label for="output-dir">图片保存根目录</label>
+          <input id="output-dir" type="text" value="抓取结果">
+          <p class="help">此文件夹作为根目录；程序会在里面自动创建指标/话题和 high、low 子文件夹。相对路径以项目目录为基准。</p>
         </div>
       </div>
       <div class="warning">请确认抓取和使用图片符合网站条款、版权和肖像权要求。CLIP 是图文相似度筛选，不是准确的人脸或美学测量工具。</div>
@@ -402,7 +403,11 @@ class Handler(BaseHTTPRequestHandler):
             "--clip-threshold",
             f"{threshold:.2f}",
             "--output-dir",
-            str(Path(output_dir).expanduser()),
+            str(
+                (ROOT / Path(output_dir).expanduser()).resolve()
+                if not Path(output_dir).expanduser().is_absolute()
+                else Path(output_dir).expanduser().resolve()
+            ),
         ]
         if mode == "random_mistral":
             command.append("--random-mistral")

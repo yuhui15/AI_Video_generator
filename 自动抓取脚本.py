@@ -3,11 +3,29 @@ import json
 import os
 import random
 import re
+import sys
 import time
+from pathlib import Path
 import requests
 from urllib.parse import quote, unquote
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
+
+
+def configure_console_encoding():
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="backslashreplace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            continue
+
+
+configure_console_encoding()
 
 # 尝试导入图像处理库
 try:
@@ -179,7 +197,7 @@ def check_image_matches_metric(image_path, prob_threshold=0.5):
 def crawl_all_63_metrics_bing_clip(
     metrics_dict,
     target_count_per_category=20,
-    base_save_dir=r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张",
+    base_save_dir=str(Path(__file__).resolve().parent / "抓取结果"),
     clip_threshold=0.5,
 ):
     """
@@ -384,8 +402,8 @@ if __name__ == "__main__":
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
     parser.add_argument(
         "--output-dir",
-        default=r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张",
-        help="图片保存目录",
+        default=str(Path(__file__).resolve().parent / "抓取结果"),
+        help="图片保存根目录；分类子文件夹会创建在该目录内",
     )
     args = parser.parse_args()
 
