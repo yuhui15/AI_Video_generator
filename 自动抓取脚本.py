@@ -197,7 +197,7 @@ def check_image_matches_metric(image_path, prob_threshold=0.5):
 def crawl_all_63_metrics_bing_clip(
     metrics_dict,
     target_count_per_category=20,
-    base_save_dir=str(Path(__file__).resolve().parent / "抓取结果"),
+    base_save_dir=str(Path(__file__).resolve().parent),
     clip_threshold=0.5,
 ):
     """
@@ -403,7 +403,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir",
         default=str(Path(__file__).resolve().parent / "抓取结果"),
-        help="图片保存根目录；分类子文件夹会创建在该目录内",
+        help="图片保存根目录（默认是项目根目录下的抓取结果）；分类子文件夹会创建在该目录内",
     )
     args = parser.parse_args()
 

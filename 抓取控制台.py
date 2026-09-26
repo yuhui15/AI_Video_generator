@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import html
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -51,49 +53,77 @@ PAGE = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>图片抓取控制台</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#131c30; --line:#293650; --muted:#9ba9c4; --text:#edf3ff; --accent:#87f0ca; --blue:#8ab6ff; }
+    :root { color-scheme: light; --bg:#f1f2f3; --panel:#fff; --line:#d7dade; --muted:#687078; --text:#171a1d; --accent:#26618a; --blue:#17699b; --nav:#14171b; }
     * { box-sizing:border-box; }
-    body { margin:0; padding:32px 16px 56px; background:radial-gradient(ellipse at 15% 0%,#18324a 0,transparent 42%),var(--bg); color:var(--text); font:15px/1.55 system-ui,"Microsoft YaHei",sans-serif; }
-    main { max-width:980px; margin:auto; }
-    header { margin:0 0 24px; }
-    h1 { margin:0 0 6px; font-size:clamp(26px,4vw,38px); letter-spacing:.02em; }
-    h2 { margin:0 0 14px; font-size:18px; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.65 "Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif; }
+    .topbar { min-height:76px; padding:0 28px; background:rgba(18,21,27,.96); border-bottom:1px solid #30343a; }
+    .topbar-inner { max-width:1200px; height:76px; margin:auto; display:flex; align-items:center; justify-content:flex-end; }
+    .brand { display:flex; align-items:center; gap:12px; min-height:58px; padding:5px 0 5px 14px; color:#f1f3f4; text-decoration:none; border-left:1px solid #555b62; }
+    .brand img { display:block; width:48px; height:44px; object-fit:contain; filter:brightness(0) invert(1); }
+    .brand span { font-size:13px; letter-spacing:.12em; white-space:nowrap; }
+    main { max-width:1040px; margin:0 auto; padding:64px 24px 80px; }
+    .hero { display:grid; grid-template-columns:1.15fr .85fr; gap:42px; align-items:center; margin:0 0 38px; padding:8px 0 42px; border-bottom:1px solid #202326; }
+    .eyebrow { margin:0 0 14px; color:#66717a; font-size:12px; letter-spacing:.2em; text-transform:uppercase; }
+    h1 { margin:0; font-family:"Noto Serif SC","Songti SC","SimSun",serif; font-size:clamp(34px,5vw,56px); font-weight:500; line-height:1.25; letter-spacing:.035em; }
+    .hero-copy { max-width:360px; color:#666e75; font-size:15px; }
+    .hero-copy p { margin:7px 0; }
+    .badge { display:inline-flex; align-items:center; gap:8px; margin-top:12px; color:#53636e; font-size:12px; letter-spacing:.04em; }
+    .badge::before { width:7px; height:7px; border-radius:50%; background:#4c997c; content:""; }
+    h2 { margin:0 0 16px; font-family:"Noto Serif SC","Songti SC","SimSun",serif; font-size:21px; font-weight:600; letter-spacing:.025em; }
     p { margin:6px 0; color:var(--muted); }
-    .badge { display:inline-block; margin-top:9px; padding:3px 10px; border:1px solid #356d5c; border-radius:999px; color:var(--accent); font-size:12px; }
-    .panel { margin:14px 0; padding:20px; border:1px solid var(--line); border-radius:16px; background:linear-gradient(145deg,rgba(25,37,60,.96),rgba(16,24,41,.96)); box-shadow:0 16px 44px #0002; }
-    .mode { display:flex; flex-wrap:wrap; gap:12px; }
-    .mode label,.toolbar button { border:1px solid var(--line); border-radius:10px; padding:9px 12px; background:#0e1729; cursor:pointer; }
+    .panel { margin:20px 0; padding:26px 28px; border:1px solid var(--line); border-radius:3px; background:var(--panel); box-shadow:0 8px 28px rgba(23,31,38,.035); }
+    .mode { display:flex; flex-wrap:wrap; gap:8px; padding-bottom:18px; border-bottom:1px solid #e2e4e5; }
+    .mode label,.toolbar button { border:1px solid #d7dade; border-radius:3px; padding:9px 13px; background:#fff; color:#30373d; cursor:pointer; transition:background .16s,border-color .16s,color .16s; }
+    .mode label:has(input:checked) { border-color:#1d5c83; background:#edf4f8; color:#174d6e; }
     input,select,button { font:inherit; color:var(--text); }
-    input[type="text"],input[type="number"] { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:#0b1425; }
-    input:focus,button:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
-    .field { margin:16px 0; }
-    .field>label,.field>legend { display:block; margin-bottom:6px; font-weight:650; }
+    input[type="text"],input[type="number"] { width:100%; padding:11px 12px; border:1px solid #cfd4d8; border-radius:2px; background:#fff; }
+    input::placeholder { color:#92999f; }
+    input:focus,button:focus-visible { outline:2px solid #78a9c5; outline-offset:2px; }
+    .field { margin:20px 0 8px; }
+    .field>label,.field>legend { display:block; margin-bottom:8px; color:#24292d; font-weight:650; }
     .help { color:var(--muted); font-size:13px; }
     .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
     .toolbar input { flex:1; min-width:180px; }
-    .toolbar button { padding:7px 11px; color:var(--blue); }
-    #metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:7px; max-height:280px; overflow:auto; padding:10px; border:1px solid var(--line); border-radius:10px; background:#0b1425; }
-    .metric { display:flex; gap:8px; align-items:flex-start; padding:5px; font-size:13px; cursor:pointer; }
-    input[type="checkbox"] { accent-color:#79e8c3; margin-top:4px; }
+    .toolbar button { padding:7px 11px; color:#245b7c; }
+    .toolbar button:hover,.mode label:hover { border-color:#7396aa; background:#f2f6f8; }
+    #metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:4px 8px; max-height:280px; overflow:auto; padding:14px; border:1px solid #d9dddf; border-radius:2px; background:#fafbfb; }
+    .metric { display:flex; gap:8px; align-items:flex-start; padding:6px 5px; color:#394149; font-size:13px; cursor:pointer; }
+    input[type="checkbox"],input[type="radio"] { accent-color:#22658d; }
+    input[type="checkbox"] { margin-top:5px; }
     .range-row { display:flex; gap:14px; align-items:center; }
-    input[type="range"] { flex:1; accent-color:#79e8c3; }
-    output { min-width:100px; text-align:right; color:var(--accent); font-weight:700; }
-    .grid { display:grid; grid-template-columns:1fr 2fr; gap:16px; }
-    .submit { width:100%; padding:13px 18px; border:0; border-radius:10px; background:linear-gradient(90deg,#79e8c3,#8ab6ff); color:#0a1422; font-weight:800; cursor:pointer; }
+    input[type="range"] { flex:1; accent-color:#286b92; }
+    output { min-width:100px; text-align:right; color:#245b7c; font-weight:700; }
+    .grid { display:grid; grid-template-columns:1fr 2fr; gap:20px; }
+    .submit { width:100%; min-height:50px; padding:13px 18px; border:1px solid #164e75; border-radius:3px; background:#174f77; color:#fff; font-weight:700; letter-spacing:.06em; cursor:pointer; transition:background .16s; }
+    .submit:hover:not(:disabled) { background:#103f63; }
     .submit:disabled { opacity:.55; cursor:wait; }
-    #status { margin:0 0 10px; color:var(--accent); font-weight:700; }
-    #logs { min-height:140px; max-height:340px; overflow:auto; padding:14px; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid var(--line); border-radius:10px; background:#070c16; color:#d2ddf2; font:12px/1.6 ui-monospace,Consolas,monospace; }
-    .warning { padding:10px 12px; border-left:3px solid #f3c773; background:#2a2417; color:#f6e5bf; font-size:13px; }
+    #status { margin:0 0 10px; color:#245b7c; font-weight:700; }
+    #logs { min-height:140px; max-height:340px; overflow:auto; padding:16px; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid #d6dadd; border-radius:2px; background:#f8f9f9; color:#333b40; font:12px/1.7 ui-monospace,Consolas,monospace; }
+    .warning { padding:12px 14px; border-left:2px solid #a88751; background:#f8f6f1; color:#615744; font-size:13px; }
     [hidden] { display:none!important; }
-    @media(max-width:600px) { .grid { grid-template-columns:1fr; } .panel { padding:16px; } }
+    @media(max-width:700px) { .topbar { padding:0 18px; } main { padding:42px 18px 56px; } .hero { grid-template-columns:1fr; gap:12px; padding-bottom:28px; } .hero-copy { max-width:none; } .grid { grid-template-columns:1fr; gap:0; } .panel { padding:20px 18px; } .brand { gap:8px; } .brand img { width:42px; height:39px; } }
   </style>
 </head>
 <body>
+<nav class="topbar" aria-label="品牌">
+  <div class="topbar-inner">
+    <a class="brand" href="https://www.yanzumeixue.com/" target="_blank" rel="noopener noreferrer" aria-label="彦祖美学官网">
+      <img src="https://www.yanzumeixue.com/images/yanzu-meixue.svg" alt="彦祖美学 Logo">
+      <span>彦祖美学</span>
+    </a>
+  </div>
+</nav>
 <main>
-  <header>
-    <h1>图片抓取控制台</h1>
-    <p>可查看 63 项预设指标；手动选择、随机抽取并用 Mistral 7B 改写，或输入自定义话题。</p>
-    <span class="badge">仅监听本机 · 不会公开到网络</span>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">IMAGE RESEARCH / LOCAL TOOL</p>
+      <h1>图片抓取控制台</h1>
+    </div>
+    <div class="hero-copy">
+      <p>从预设指标或自定义话题出发，整理可供研究的图片样本。</p>
+      <p>设定筛选标准，让每一次采集都有清晰的方向。</p>
+      <span class="badge">仅监听本机 · 不会公开到网络</span>
+    </div>
   </header>
   <form id="crawl-form">
     <section class="panel">
@@ -142,8 +172,8 @@ PAGE = r"""<!doctype html>
         </div>
         <div class="field">
           <label for="output-dir">图片保存根目录</label>
-          <input id="output-dir" type="text" value="抓取结果">
-          <p class="help">此文件夹作为根目录；程序会在里面自动创建指标/话题和 high、low 子文件夹。相对路径以项目目录为基准。</p>
+          <input id="output-dir" type="text" value="__DEFAULT_OUTPUT__">
+          <p class="help">默认保存在项目根目录下的“抓取结果”文件夹。分类子文件夹会创建在该目录内；相对路径以项目根目录为基准。</p>
         </div>
       </div>
       <div class="warning">请确认抓取和使用图片符合网站条款、版权和肖像权要求。CLIP 是图文相似度筛选，不是准确的人脸或美学测量工具。</div>
@@ -334,7 +364,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/":
-            payload = PAGE.encode("utf-8")
+            page = PAGE.replace(
+                "__DEFAULT_OUTPUT__",
+                html.escape(str(DEFAULT_OUTPUT), quote=True),
+            )
+            payload = page.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -431,8 +465,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
-    print("图片抓取控制台已启动：http://127.0.0.1:8765")
+    port = int(os.getenv("PORT", "8765"))
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    print(f"图片抓取控制台已启动：http://127.0.0.1:{port}")
     print("关闭此终端即可停止网页服务；抓取任务运行期间请保持窗口开启。")
     try:
         server.serve_forever()

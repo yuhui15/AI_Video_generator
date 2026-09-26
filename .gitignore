@@ -34,7 +34,19 @@ dist/
 output/
 datasets/
 全套63项美学指标数据集*/
+抓取结果/
 hf_cache/
 transformers_cache/
 *.tmp
 temp_*
+
+# Ignore downloaded image files everywhere, except intentional I2V inputs
+*.jpg
+*.jpeg
+*.png
+*.webp
+!input_images/
+!input_images/*.jpg
+!input_images/*.jpeg
+!input_images/*.png
+!input_images/*.webp
