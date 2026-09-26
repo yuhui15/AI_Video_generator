@@ -1,3 +1,5 @@
+import argparse
+import json
 import os
 import re
 import time
@@ -14,22 +16,34 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-# 尝试导入本地高精度多模态模型 CLIP (openai/clip-vit-large-patch14)
-try:
-    import torch
-    from PIL import Image
-    from transformers import CLIPProcessor, CLIPModel
-    
-    print("🔄 正在本地加载高精度 CLIP 模型 (openai/clip-vit-large-patch14)...")
-    CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
+CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
+clip_model = None
+clip_processor = None
+torch = None
+Image = None
+
+
+def load_clip_model():
+    """Load CLIP only when an actual image needs scoring."""
+    global clip_model, clip_processor, torch, Image
+    if clip_model is not None:
+        return
+    try:
+        import torch as torch_module
+        from PIL import Image as image_module
+        from transformers import CLIPModel, CLIPProcessor
+    except ImportError as exc:
+        raise RuntimeError(
+            "CLIP 图片筛选依赖缺失；请安装 torch、Pillow 和 transformers。"
+        ) from exc
+
+    print(f"🔄 正在加载 CLIP 模型 ({CLIP_MODEL_NAME})...")
     clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
     clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
     clip_model.eval()
-    CLIP_AVAILABLE = True
-    print("✅ 高精度 CLIP 模型加载成功！将对真人脸部、单人、眼睛可见性进行严苛质检。")
-except ImportError:
-    CLIP_AVAILABLE = False
-    print("⚠️ 未检测到 transformers/torch，请通过 pip install transformers torch 安装。")
+    torch = torch_module
+    Image = image_module
+    print("✅ CLIP 模型加载成功，开始按设定严格度筛选图片。")
 
 def is_valid_face_image(image_path):
     """
@@ -50,44 +64,47 @@ def is_valid_face_image(image_path):
     except Exception:
         return False
 
+
+def safe_path_component(value):
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value)).strip(" .")
+    return cleaned or "custom_topic"
+
+
 def check_image_matches_metric(image_path, prob_threshold=0.5):
     """
     高精度 CLIP 统一质检：
     - 正向：单张清晰的真人脸部照片，真人肖像，眼睛未被遮挡。
     - 负向：卡通、动漫、插画、美学概念图、技术图表、多人合照、眼睛被遮挡（墨镜/口罩）。
     """
-    if not CLIP_AVAILABLE:
-        return True
-    
+    if not 0.0 < prob_threshold < 1.0:
+        raise ValueError("CLIP 筛选阈值必须在 0 和 1 之间。")
+    load_clip_model()
     try:
         image = Image.open(image_path).convert("RGB")
-        
-        # 统一正向提示词
+    except (OSError, ValueError):
+        return False
+
+    try:
         pos_text = "A clear, high-quality photograph of a single real human face, real person portrait, with visible eyes, no text."
-        # 统一负向提示词
-        neg_text = neg_text = "A cartoon, anime, illustration, drawing, aesthetic concept diagram, technical drawing, multiple people, group photo, eyes covered, sunglasses, mask, blurry, collage, low resolution, heavy text, text overlay, watermarks, typography, words."
-        
+        neg_text = "A cartoon, anime, illustration, drawing, aesthetic concept diagram, technical drawing, multiple people, group photo, eyes covered, sunglasses, mask, blurry, collage, low resolution, heavy text, text overlay, watermarks, typography, words."
         texts = [pos_text, neg_text]
         inputs = clip_processor(text=texts, images=image, return_tensors="pt", padding=True)
-        
         with torch.no_grad():
             outputs = clip_model(**inputs)
             logits_per_image = outputs.logits_per_image / 100.0
             probs = logits_per_image.softmax(dim=-1)
-            
-        pos_prob = probs[0][0].item() # 符合真人的概率
-        neg_prob = probs[0][1].item() # 命中违规（卡通/图表/多人/遮挡）的概率
-        
-        if pos_prob >= prob_threshold and neg_prob < (1.0 - prob_threshold):
-            return True
-        else:
-            return False
-            
-    except Exception as e:
-        print(f"   [警告] CLIP 校验出错: {e}")
-        return True
+        pos_prob = probs[0][0].item()
+        neg_prob = probs[0][1].item()
+        return pos_prob >= prob_threshold and neg_prob < (1.0 - prob_threshold)
+    except Exception as exc:
+        raise RuntimeError(f"CLIP 图片筛选失败：{exc}") from exc
 
-def crawl_all_63_metrics_bing_clip(metrics_dict, target_count_per_category=20, base_save_dir=r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张"):
+def crawl_all_63_metrics_bing_clip(
+    metrics_dict,
+    target_count_per_category=20,
+    base_save_dir=r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张",
+    clip_threshold=0.5,
+):
     """
     使用 Bing 元素解析搜索 + 高精度 CLIP 质检全自动抓取 63 个美学指标。
     """
@@ -108,7 +125,8 @@ def crawl_all_63_metrics_bing_clip(metrics_dict, target_count_per_category=20, b
     for chinese_metric_name, levels in metrics_dict.items():
         print(f"\n==================== 正在处理美学指标: [{chinese_metric_name}] ====================")
         
-        metric_dir = os.path.join(base_save_dir, chinese_metric_name)
+        safe_metric_name = safe_path_component(chinese_metric_name)
+        metric_dir = os.path.join(base_save_dir, safe_metric_name)
         
         for level, info in levels.items():
             keyword = info["query"]
@@ -180,9 +198,12 @@ def crawl_all_63_metrics_bing_clip(metrics_dict, target_count_per_category=20, b
                             # 1. 基础尺寸与读取校验
                             if is_valid_face_image(temp_filename):
                                 # 2. 高精度 CLIP 校验（真人、单人、眼睛未被遮挡）
-                                if check_image_matches_metric(temp_filename):
+                                if check_image_matches_metric(temp_filename, clip_threshold):
                                     success_count += 1
-                                    final_filename = os.path.join(level_dir, f"{chinese_metric_name}_{level_desc}_{success_count:02d}.{ext}")
+                                    final_filename = os.path.join(
+                                        level_dir,
+                                        f"{safe_metric_name}_{safe_path_component(level_desc)}_{success_count:02d}.{ext}",
+                                    )
                                     os.rename(temp_filename, final_filename)
                                     print(f"   [{success_count}/{target_count_per_category}] ✅ 质检通过并保存: {os.path.basename(final_filename)}")
                                 else:
@@ -198,7 +219,10 @@ def crawl_all_63_metrics_bing_clip(metrics_dict, target_count_per_category=20, b
                 page_scroll_attempts += 1
 
             if success_count < target_count_per_category:
-                print(f"   ⚠️ [跳过] 目标级别 [{level.upper()} -> {level_desc}] 有效图片不足 20 张（最终收集到 {success_count} 张），自动跳至下一指标。")
+                print(
+                    f"   ⚠️ [跳过] 目标级别 [{level.upper()} -> {level_desc}] "
+                    f"有效图片不足 {target_count_per_category} 张（最终收集到 {success_count} 张），自动跳至下一指标。"
+                )
 
     driver.quit()
     print(f"\n🎉 全部 63 个美学指标数据集采集流程圆满结束！\n📁 有效数据集保存在: {base_save_dir}")
@@ -270,4 +294,52 @@ if __name__ == "__main__":
         "下颌角至口裂线距离": {"high": {"query": "site:looksmax.org long gonion to mouth line distance", "desc": "长"}, "low": {"query": "site:looksmax.org short gonion to mouth line distance", "desc": "短"}}
     }
 
-    crawl_all_63_metrics_bing_clip(comprehensive_63_metrics, target_count_per_category=20)
+    parser = argparse.ArgumentParser(description="Bing 图片抓取与 CLIP 质量筛选")
+    parser.add_argument("--list-metrics", action="store_true", help="输出内置指标名称 JSON")
+    parser.add_argument("--metric", action="append", help="选择内置指标，可重复传入")
+    parser.add_argument("--custom-topic", help="使用自定义搜索话题")
+    parser.add_argument("--target-count", type=int, default=20, help="每个级别目标图片数")
+    parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
+    parser.add_argument(
+        "--output-dir",
+        default=r"C:\Users\sunyu\Desktop\全套63项美学指标数据集_高精质检20张",
+        help="图片保存目录",
+    )
+    args = parser.parse_args()
+
+    if args.list_metrics:
+        print(json.dumps(list(comprehensive_63_metrics), ensure_ascii=False))
+        raise SystemExit(0)
+    if args.target_count < 1 or args.target_count > 1000:
+        parser.error("--target-count 必须在 1 到 1000 之间")
+    if not 0.01 <= args.clip_threshold <= 0.99:
+        parser.error("--clip-threshold 必须在 0.01 到 0.99 之间")
+    if args.custom_topic and args.metric:
+        parser.error("--custom-topic 与 --metric 不能同时使用")
+
+    if args.custom_topic:
+        custom_topic = args.custom_topic.strip()
+        if not custom_topic:
+            parser.error("--custom-topic 不能为空")
+        selected_metrics = {
+            safe_path_component(custom_topic): {
+                "search": {"query": custom_topic, "desc": "搜索结果"}
+            }
+        }
+    elif args.metric:
+        unknown_metrics = [name for name in args.metric if name not in comprehensive_63_metrics]
+        if unknown_metrics:
+            parser.error(f"未知指标：{', '.join(unknown_metrics)}")
+        selected_metrics = {
+            name: comprehensive_63_metrics[name]
+            for name in dict.fromkeys(args.metric)
+        }
+    else:
+        selected_metrics = comprehensive_63_metrics
+
+    crawl_all_63_metrics_bing_clip(
+        selected_metrics,
+        target_count_per_category=args.target_count,
+        base_save_dir=args.output_dir,
+        clip_threshold=args.clip_threshold,
+    )
