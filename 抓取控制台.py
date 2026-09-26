@@ -179,22 +179,17 @@ PAGE = r"""<!doctype html>
     <section class="panel">
       <h2>1. 选择抓取内容</h2>
       <div class="mode">
-        <label><input type="radio" name="mode" value="metrics" checked> 手动选择 63 项指标</label>
-        <label><input type="radio" name="mode" value="random_mistral"> 随机抽 1 项 + Ministral 14B 改写</label>
+        <label><input type="radio" name="mode" value="metrics" checked> 选择一个指标 + Ministral 14B 改写</label>
         <label><input type="radio" name="mode" value="custom"> 自定义搜索话题</label>
       </div>
       <div id="metric-section" class="field">
         <div class="toolbar">
           <input id="metric-filter" type="text" placeholder="搜索指标名称">
-          <button type="button" id="select-all">全选</button>
-          <button type="button" id="clear-all">清空</button>
-          <span class="help" id="selected-count"></span>
+          <span class="help" id="selected-count">请选择一个指标</span>
         </div>
-        <div id="metrics" aria-label="指标列表"></div>
-        <p class="help" id="metric-help">可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。</p>
-      </div>
-      <div id="random-section" class="field" hidden>
-        <p class="help">启动后会从全部 63 项中随机抽取一项，将其 high / low 搜索词分别交给 Ministral 14B 改写，再用于 Bing 图片搜索。</p>
+        <div id="metrics" aria-label="63 项指标列表"></div>
+        <p class="help" id="metric-help">选定指标后点击“改写搜索词”，核对 high / low 搜索词，再开始抓取。</p>
+        <p class="help">图片搜索限制在 looksmax.org，使用 Bing 图片搜索站内结果。</p>
         <p class="help">模型：ministral-14b-2512（通过 Mistral API 调用）</p>
         <label for="mistral-api-key">Mistral API Key</label>
         <div class="token-controls">
@@ -204,6 +199,13 @@ PAGE = r"""<!doctype html>
         </div>
         <p class="help" id="token-help">API Key 只保存在本机服务内存中，并在抓取时传给子进程；不会写入文件、浏览器存储或任务日志。关闭服务后需重新输入。</p>
         <p id="token-status" role="status" aria-live="polite" data-configured="false">正在检查 API Key 状态…</p>
+        <button type="button" id="rewrite-query">改写搜索词</button>
+        <div id="rewritten-queries" class="field" aria-live="polite" hidden>
+          <p><strong>High 搜索词</strong></p>
+          <pre id="rewritten-high"></pre>
+          <p><strong>Low 搜索词</strong></p>
+          <pre id="rewritten-low"></pre>
+        </div>
       </div>
       <div id="custom-section" class="field" hidden>
         <label for="custom-topic">抓取标题 / 搜索话题</label>
@@ -259,6 +261,8 @@ const metricFilter = document.getElementById("metric-filter");
 const tokenInput = document.getElementById("mistral-api-key");
 const tokenStatus = document.getElementById("token-status");
 let timer = null;
+let rewrittenMetric = null;
+let rewrittenQueries = null;
 
 function updateMode() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -267,17 +271,18 @@ function updateMode() {
   metricSection.hidden = mode === "custom";
   metricsRoot.querySelectorAll("input").forEach(item => { item.disabled = !manual; });
   document.getElementById("metric-filter").disabled = !manual;
-  document.getElementById("select-all").disabled = !manual;
-  document.getElementById("clear-all").disabled = !manual;
-  document.getElementById("metric-help").textContent = manual
-    ? "可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。"
-    : "列表仅供查看；抓取时会忽略手动勾选，并从全部 63 项中随机抽取一项。";
-  document.getElementById("random-section").hidden = mode !== "random_mistral";
   document.getElementById("custom-section").hidden = mode !== "custom";
 }
 function updateCount() {
-  const count = metricsRoot.querySelectorAll("input:checked").length;
-  document.getElementById("selected-count").textContent = `已选 ${count} 项`;
+  const selected = metricsRoot.querySelector("input:checked");
+  document.getElementById("selected-count").textContent = selected
+    ? `已选：${selected.value}`
+    : "请选择一个指标";
+  if (rewrittenMetric !== (selected && selected.value)) {
+    rewrittenMetric = null;
+    rewrittenQueries = null;
+    document.getElementById("rewritten-queries").hidden = true;
+  }
 }
 function updateThreshold() {
   const value = Number(document.getElementById("threshold").value);
@@ -299,7 +304,8 @@ async function loadMetrics() {
     label.className = "metric";
     label.dataset.name = name;
     const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
+    checkbox.type = "radio";
+    checkbox.name = "metric";
     checkbox.value = name;
     checkbox.addEventListener("change", updateCount);
     const text = document.createElement("span");
@@ -377,13 +383,37 @@ document.getElementById("clear-token").addEventListener("click", async () => {
 document.querySelectorAll('input[name="mode"]').forEach(item => item.addEventListener("change", updateMode));
 document.getElementById("threshold").addEventListener("input", updateThreshold);
 metricFilter.addEventListener("input", filterMetrics);
-document.getElementById("select-all").addEventListener("click", () => {
-  metricsRoot.querySelectorAll("input").forEach(item => { if (!item.closest("label").hidden) item.checked = true; });
-  updateCount();
-});
-document.getElementById("clear-all").addEventListener("click", () => {
-  metricsRoot.querySelectorAll("input").forEach(item => { item.checked = false; });
-  updateCount();
+document.getElementById("rewrite-query").addEventListener("click", async () => {
+  const selected = metricsRoot.querySelector("input:checked");
+  if (!selected) {
+    tokenStatus.textContent = "请先选择一个指标。";
+    return;
+  }
+  const button = document.getElementById("rewrite-query");
+  button.disabled = true;
+  tokenStatus.textContent = "正在调用 Ministral 14B 改写 high / low 搜索词…";
+  try {
+    const response = await fetch("/api/rewrite", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({metric:selected.value})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "搜索词改写失败");
+    rewrittenMetric = selected.value;
+    rewrittenQueries = data.queries;
+    document.getElementById("rewritten-high").textContent = rewrittenQueries.high;
+    document.getElementById("rewritten-low").textContent = rewrittenQueries.low;
+    document.getElementById("rewritten-queries").hidden = false;
+    tokenStatus.textContent = `已用 ${data.model} 改写。搜索限定于 looksmax.org；请确认搜索词后开始抓取。`;
+  } catch (error) {
+    rewrittenMetric = null;
+    rewrittenQueries = null;
+    document.getElementById("rewritten-queries").hidden = true;
+    tokenStatus.textContent = `改写失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 });
 async function pollStatus() {
   const response = await fetch("/api/status");
@@ -470,13 +500,18 @@ form.addEventListener("submit", async event => {
   const payload = {
     mode,
     metrics: selectedMetrics,
+    rewritten_queries: rewrittenMetric === selectedMetrics[0] ? rewrittenQueries : null,
     custom_topic: document.getElementById("custom-topic").value.trim(),
     threshold: Number(document.getElementById("threshold").value),
     target_count: Number(document.getElementById("target-count").value),
     output_dir: document.getElementById("output-dir").value.trim()
   };
-  if (mode === "metrics" && selectedMetrics.length === 0) {
-    statusElement.textContent = "请至少选择一个指标。";
+  if (mode === "metrics" && selectedMetrics.length !== 1) {
+    statusElement.textContent = "请选择一个指标。";
+    return;
+  }
+  if (mode === "metrics" && !payload.rewritten_queries) {
+    statusElement.textContent = "请先点击“改写搜索词”，查看 high / low 结果后再抓取。";
     return;
   }
   if (mode === "custom" && !payload.custom_topic) {

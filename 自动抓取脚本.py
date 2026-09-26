@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import random
 import re
 import sys
 import time
@@ -112,7 +111,8 @@ def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
                         "content": (
                             "You rewrite image-search queries. Return only one concise English Bing Images "
                             "query, with no quotes, explanation, numbering, or Markdown. Preserve the "
-                            "specified facial metric and its high/low direction. Prefer neutral, non-explicit "
+                            "specified facial metric and its high/low direction. Keep the exact "
+                            "site:looksmax.org restriction. Prefer neutral, non-explicit "
                             "adult portrait photography terms. Do not add a person’s name, medical claim, "
                             "or unrelated traits."
                         ),
@@ -150,23 +150,9 @@ def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
     rewritten = re.sub(r"\s+", " ", content).strip().strip("\"'")
     if not rewritten:
         raise RuntimeError(f"Mistral 返回了空搜索词（模型：{model_name}）。")
+    if "site:looksmax.org" not in rewritten.casefold():
+        rewritten = f"{rewritten} site:looksmax.org"
     return rewritten[:300]
-
-
-def choose_random_mistral_metric(metrics_dict):
-    metric_name = random.choice(list(metrics_dict))
-    levels = metrics_dict[metric_name]
-    print(f"[random] 从 63 项指标中随机抽中：{metric_name}")
-    rewritten_levels = {}
-    for level, info in levels.items():
-        rewritten_query = rewrite_search_query_with_mistral(
-            metric_name,
-            info["desc"],
-            info["query"],
-        )
-        rewritten_levels[level] = {**info, "query": rewritten_query}
-        print(f"[Mistral] 改写 [{level}/{info['desc']}]：{rewritten_query}")
-    return metric_name, {metric_name: rewritten_levels}
 
 
 def check_image_matches_metric(image_path, prob_threshold=0.5):
@@ -394,12 +380,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bing 图片抓取与 CLIP 质量筛选")
     parser.add_argument("--list-metrics", action="store_true", help="输出内置指标名称 JSON")
     parser.add_argument("--metric", action="append", help="选择内置指标，可重复传入")
+    parser.add_argument("--rewrite-metric", help="改写指定指标的 high/low 搜索词并输出 JSON")
+    parser.add_argument("--rewritten-query-high", help="改写后的 high 搜索词")
+    parser.add_argument("--rewritten-query-low", help="改写后的 low 搜索词")
     parser.add_argument("--custom-topic", help="使用自定义搜索话题")
-    parser.add_argument(
-        "--random-mistral",
-        action="store_true",
-        help="从 63 项指标中随机抽取一项，并用 Mistral Ministral 14B 改写搜索词",
-    )
     parser.add_argument("--target-count", type=int, default=20, help="每个级别目标图片数")
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
     parser.add_argument(
@@ -416,12 +400,24 @@ if __name__ == "__main__":
         parser.error("--target-count 必须在 1 到 1000 之间")
     if not 0.01 <= args.clip_threshold <= 0.99:
         parser.error("--clip-threshold 必须在 0.01 到 0.99 之间")
-    selected_modes = sum((bool(args.custom_topic), bool(args.metric), args.random_mistral))
+    selected_modes = sum((bool(args.custom_topic), bool(args.metric), bool(args.rewrite_metric)))
     if selected_modes > 1:
-        parser.error("--custom-topic、--metric 和 --random-mistral 只能选择一种")
+        parser.error("--custom-topic、--metric 和 --rewrite-metric 只能选择一种")
 
-    if args.random_mistral:
-        _, selected_metrics = choose_random_mistral_metric(comprehensive_63_metrics)
+    if args.rewrite_metric:
+        if args.rewrite_metric not in comprehensive_63_metrics:
+            parser.error(f"未知指标：{args.rewrite_metric}")
+        levels = comprehensive_63_metrics[args.rewrite_metric]
+        rewritten_queries = {
+            level: rewrite_search_query_with_mistral(
+                args.rewrite_metric,
+                info["desc"],
+                info["query"],
+            )
+            for level, info in levels.items()
+        }
+        print(json.dumps(rewritten_queries, ensure_ascii=False))
+        raise SystemExit(0)
     elif args.custom_topic:
         custom_topic = args.custom_topic.strip()
         if not custom_topic:
@@ -435,10 +431,20 @@ if __name__ == "__main__":
         unknown_metrics = [name for name in args.metric if name not in comprehensive_63_metrics]
         if unknown_metrics:
             parser.error(f"未知指标：{', '.join(unknown_metrics)}")
+        has_high = args.rewritten_query_high is not None
+        has_low = args.rewritten_query_low is not None
+        if has_high != has_low:
+            parser.error("改写搜索词必须同时提供 high 和 low。")
+        if has_high and len(set(args.metric)) != 1:
+            parser.error("提供改写搜索词时只能选择一个指标。")
         selected_metrics = {
             name: comprehensive_63_metrics[name]
             for name in dict.fromkeys(args.metric)
         }
+        if has_high:
+            metric_levels = selected_metrics[args.metric[0]]
+            metric_levels["high"]["query"] = args.rewritten_query_high
+            metric_levels["low"]["query"] = args.rewritten_query_low
     else:
         selected_metrics = comprehensive_63_metrics
 
