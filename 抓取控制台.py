@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import html
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -13,12 +14,12 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 ROOT = Path(__file__).resolve().parent
 SCRAPER = ROOT / "自动抓取脚本.py"
-DEFAULT_OUTPUT = ROOT / "抓取结果"
+DEFAULT_OUTPUT = ROOT
 MAX_REQUEST_BYTES = 64 * 1024
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 PROTECTED_DIRS = {
@@ -127,11 +128,30 @@ PAGE = r"""<!doctype html>
     #token-status { min-height:22px; margin:5px 0 0; font-size:13px; }
     #token-status[data-configured="true"] { color:#28734f; }
     #token-status[data-configured="false"] { color:#805d28; }
-    #library-list { display:grid; gap:12px; }
-    .library-folder,.library-image { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border:1px solid #d9dddf; background:#fafbfb; }
-    .library-path { min-width:0; overflow-wrap:anywhere; color:#28343b; }
+    .file-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:14px 0; }
+    .file-toolbar button,.breadcrumb button { border:1px solid #cbd2d7; border-radius:3px; padding:8px 12px; background:#fff; color:#245b7c; cursor:pointer; }
+    .file-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
+    .breadcrumb { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-height:40px; padding:8px 10px; border:1px solid #d9dddf; background:#f8fafb; }
+    .breadcrumb button { border:0; padding:3px 6px; background:transparent; }
+    .breadcrumb button:hover { background:#eaf1f5; }
+    .breadcrumb-separator { color:#8a9298; }
+    #library-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr)); gap:12px; margin-top:14px; }
+    .library-card { position:relative; display:flex; min-width:0; flex-direction:column; gap:7px; padding:9px; border:1px solid #d9dddf; border-radius:3px; background:#fafbfb; }
+    .library-card:hover { border-color:#91aaba; background:#f4f8fa; }
+    .library-open { display:flex; min-width:0; flex:1; flex-direction:column; align-items:stretch; gap:7px; padding:0; border:0; background:transparent; color:#28343b; text-align:left; cursor:pointer; }
+    .library-open:focus-visible { outline:2px solid #78a9c5; outline-offset:2px; }
+    .library-preview { display:grid; width:100%; height:116px; place-items:center; overflow:hidden; border:1px solid #e1e5e7; background:linear-gradient(135deg,#f0f3f4,#e7ecef); color:#4e6573; font-size:34px; }
+    .library-preview img { width:100%; height:100%; object-fit:cover; }
+    .library-name { width:100%; overflow:hidden; color:#28343b; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
+    .library-meta { color:#78828a; font-size:11px; }
+    .library-card .item-action { align-self:flex-end; padding:5px 9px; font-size:12px; }
     .item-action.danger { border-color:#b44b42; color:#9d2f27; }
     .item-action:disabled { opacity:.55; cursor:wait; }
+    #image-preview { width:min(92vw,1000px); max-width:none; max-height:90vh; padding:16px; border:1px solid #ccd3d8; border-radius:4px; background:#fff; box-shadow:0 18px 70px rgba(0,0,0,.35); }
+    #image-preview::backdrop { background:rgba(12,17,21,.72); }
+    #preview-image { display:block; max-width:100%; max-height:calc(90vh - 90px); margin:0 auto; object-fit:contain; }
+    .preview-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
+    #preview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     [hidden] { display:none!important; }
     @media(max-width:700px) { .topbar { padding:0 18px; } main { padding:42px 18px 56px; } .hero { grid-template-columns:1fr; gap:12px; padding-bottom:28px; } .hero-copy { max-width:none; } .grid { grid-template-columns:1fr; gap:0; } .panel { padding:20px 18px; } .brand { gap:8px; } .brand img { width:42px; height:39px; } }
     @media(max-width:560px) { .token-controls { grid-template-columns:1fr 1fr; } .token-controls input { grid-column:1/-1; } }
@@ -171,9 +191,25 @@ PAGE = r"""<!doctype html>
           <button type="button" id="refresh-library">刷新列表</button>
           <span class="help" id="library-status" role="status"></span>
         </div>
+        <div class="file-toolbar">
+          <button type="button" id="library-back" disabled>返回上一级</button>
+          <button type="button" id="library-root">项目根目录</button>
+        </div>
+        <nav id="library-breadcrumb" class="breadcrumb" aria-label="当前文件夹路径"></nav>
         <div id="library-list" aria-live="polite"></div>
       </section>
     </section>
+    <dialog id="image-preview">
+      <div class="preview-toolbar">
+        <strong id="preview-name"></strong>
+        <button type="button" class="item-action" id="close-preview">关闭</button>
+      </div>
+      <img id="preview-image" alt="图片预览">
+      <div class="preview-toolbar">
+        <span class="help" id="preview-path"></span>
+        <button type="button" class="item-action danger" id="preview-delete">删除照片</button>
+      </div>
+    </dialog>
     <section id="crawler-page">
     <form id="crawl-form">
     <section class="panel">
@@ -189,6 +225,7 @@ PAGE = r"""<!doctype html>
         </div>
         <div id="metrics" aria-label="63 项指标列表"></div>
         <p class="help" id="metric-help">选定指标后点击“改写搜索词”，核对 high / low 搜索词，再开始抓取。</p>
+        <p class="help">保存文件夹始终使用改写前选中的指标名称；改写后的搜索词只用于搜索，不会改变文件夹名。</p>
         <p class="help">图片搜索限制在 looksmax.org，使用 Bing 图片搜索站内结果。</p>
         <p class="help">模型：ministral-14b-2512（通过 Mistral API 调用）</p>
         <label for="mistral-api-key">Mistral API Key</label>
@@ -233,7 +270,7 @@ PAGE = r"""<!doctype html>
         <div class="field">
           <label for="output-dir">图片保存根目录</label>
           <input id="output-dir" type="text" value="__DEFAULT_OUTPUT__">
-          <p class="help">默认保存在项目根目录下的“抓取结果”文件夹。分类子文件夹会创建在该目录内；相对路径以项目根目录为基准。</p>
+          <p class="help">默认直接保存在项目根目录下，以原始指标名创建文件夹（例如“面部长宽比”）；改写词不会改变文件夹名。相对路径以项目根目录为基准。</p>
         </div>
       </div>
       <div class="warning">请确认抓取和使用图片符合网站条款、版权和肖像权要求。CLIP 是图文相似度筛选，不是准确的人脸或美学测量工具。</div>
@@ -257,6 +294,12 @@ const crawlerPage = document.getElementById("crawler-page");
 const managerPage = document.getElementById("manager-page");
 const libraryList = document.getElementById("library-list");
 const libraryStatus = document.getElementById("library-status");
+const libraryBreadcrumb = document.getElementById("library-breadcrumb");
+const libraryBack = document.getElementById("library-back");
+const previewDialog = document.getElementById("image-preview");
+const previewImage = document.getElementById("preview-image");
+let currentLibraryPath = "";
+let previewedImagePath = "";
 const metricFilter = document.getElementById("metric-filter");
 const tokenInput = document.getElementById("mistral-api-key");
 const tokenStatus = document.getElementById("token-status");
@@ -324,7 +367,7 @@ async function refreshTokenStatus() {
     tokenStatus.dataset.configured = String(data.configured);
     tokenStatus.textContent = data.configured
       ? "Mistral API Key 已绑定到本机服务（只显示状态，不回显密钥）。"
-      : "尚未绑定 Mistral API Key；使用 Ministral 随机模式前请先绑定。";
+      : "尚未绑定 Mistral API Key；改写搜索词前请先绑定。";
   } catch (error) {
     tokenStatus.dataset.configured = "false";
     tokenStatus.textContent = `API Key 状态读取失败：${error.message}`;
@@ -439,39 +482,94 @@ document.getElementById("show-manager").addEventListener("click", event => {
   document.getElementById("show-crawler").removeAttribute("aria-current");
   loadLibrary();
 });
-function addLibraryRow(path, description, kind) {
-  const row = document.createElement("div");
-  row.className = kind === "folder" ? "library-folder" : "library-image";
-  const label = document.createElement("span");
-  label.className = "library-path";
-  label.textContent = `${path} · ${description}`;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "item-action danger";
-  button.textContent = kind === "folder" ? "删除整个文件夹" : "删除图片";
-  button.addEventListener("click", () => deleteLibraryItem(path, kind));
-  row.append(label, button);
-  libraryList.append(row);
+function renderBreadcrumb(path) {
+  libraryBreadcrumb.replaceChildren();
+  const rootButton = document.createElement("button");
+  rootButton.type = "button";
+  rootButton.textContent = "项目根目录";
+  rootButton.addEventListener("click", () => loadLibrary(""));
+  libraryBreadcrumb.append(rootButton);
+  let accumulated = "";
+  for (const segment of path.split("/").filter(Boolean)) {
+    const separator = document.createElement("span");
+    separator.className = "breadcrumb-separator";
+    separator.textContent = "›";
+    libraryBreadcrumb.append(separator);
+    accumulated = accumulated ? `${accumulated}/${segment}` : segment;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = segment;
+    const targetPath = accumulated;
+    button.addEventListener("click", () => loadLibrary(targetPath));
+    libraryBreadcrumb.append(button);
+  }
+  libraryBack.disabled = !path;
 }
-async function loadLibrary() {
+function makeLibraryCard(item, kind) {
+  const card = document.createElement("article");
+  card.className = "library-card";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "library-open";
+  const preview = document.createElement("span");
+  preview.className = "library-preview";
+  if (kind === "folder") {
+    preview.textContent = "📁";
+  } else {
+    const image = document.createElement("img");
+    image.src = `/api/manage/image?path=${encodeURIComponent(item.path)}`;
+    image.alt = "";
+    image.loading = "lazy";
+    image.addEventListener("error", () => { preview.textContent = "无法预览"; });
+    preview.append(image);
+  }
+  const name = document.createElement("span");
+  name.className = "library-name";
+  name.textContent = item.name;
+  open.append(preview, name);
+  if (kind === "folder") {
+    const meta = document.createElement("span");
+    meta.className = "library-meta";
+    meta.textContent = item.image_count ? `${item.image_count} 张图片` : "文件夹";
+    open.append(meta);
+    open.addEventListener("click", () => loadLibrary(item.path));
+  } else {
+    const meta = document.createElement("span");
+    meta.className = "library-meta";
+    meta.textContent = `${(item.size / 1024).toFixed(1)} KB`;
+    open.append(meta);
+    open.addEventListener("click", () => showImagePreview(item));
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "item-action danger";
+  remove.textContent = kind === "folder" ? "删除文件夹" : "删除照片";
+  remove.addEventListener("click", () => deleteLibraryItem(item.path, kind));
+  card.append(open, remove);
+  return card;
+}
+function showImagePreview(item) {
+  previewedImagePath = item.path;
+  previewImage.src = `/api/manage/image?path=${encodeURIComponent(item.path)}`;
+  document.getElementById("preview-name").textContent = item.name;
+  document.getElementById("preview-path").textContent = item.path;
+  previewDialog.showModal();
+}
+async function loadLibrary(path = currentLibraryPath) {
   libraryStatus.textContent = "正在读取…";
   libraryList.replaceChildren();
   try {
-    const response = await fetch("/api/manage/list", {cache:"no-store"});
+    const response = await fetch(`/api/manage/list?path=${encodeURIComponent(path)}`, {cache:"no-store"});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "读取失败");
+    currentLibraryPath = data.path;
+    renderBreadcrumb(currentLibraryPath);
+    for (const folder of data.folders) libraryList.append(makeLibraryCard(folder, "folder"));
+    for (const image of data.images) libraryList.append(makeLibraryCard(image, "image"));
+    libraryStatus.textContent = `${data.folders.length} 个文件夹，${data.images.length} 张照片`;
     if (data.folders.length === 0 && data.images.length === 0) {
-      libraryStatus.textContent = "没有找到可管理的图片。";
-      return;
+      libraryStatus.textContent += " · 此文件夹为空";
     }
-    for (const folder of data.folders) {
-      addLibraryRow(folder.path, `${folder.image_count} 张图片`, "folder");
-    }
-    for (const image of data.images) {
-      const size = `${(image.size / 1024).toFixed(1)} KB`;
-      addLibraryRow(image.path, size, "image");
-    }
-    libraryStatus.textContent = `共 ${data.folders.length} 个含图片文件夹，${data.images.length} 张图片`;
   } catch (error) {
     libraryStatus.textContent = `读取失败：${error.message}`;
   }
@@ -488,11 +586,27 @@ async function deleteLibraryItem(path, kind) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "删除失败");
     libraryStatus.textContent = `已删除：${path}`;
-    await loadLibrary();
+    if (previewedImagePath === path) previewDialog.close();
+    previewedImagePath = "";
+    await loadLibrary(currentLibraryPath);
   } catch (error) {
     libraryStatus.textContent = `删除失败：${error.message}`;
   }
 }
+libraryBack.addEventListener("click", () => {
+  const parts = currentLibraryPath.split("/").filter(Boolean);
+  parts.pop();
+  loadLibrary(parts.join("/"));
+});
+document.getElementById("library-root").addEventListener("click", () => loadLibrary(""));
+document.getElementById("refresh-library").addEventListener("click", () => loadLibrary(currentLibraryPath));
+document.getElementById("close-preview").addEventListener("click", () => {
+  previewDialog.close();
+  previewedImagePath = "";
+});
+document.getElementById("preview-delete").addEventListener("click", () => {
+  if (previewedImagePath) deleteLibraryItem(previewedImagePath, "image");
+});
 form.addEventListener("submit", async event => {
   event.preventDefault();
   const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -539,7 +653,6 @@ updateMode();
 updateThreshold();
 refreshTokenStatus();
 loadMetrics().catch(error => { statusElement.textContent = error.message; });
-document.getElementById("refresh-library").addEventListener("click", loadLibrary);
 </script>
 </body>
 </html>
@@ -553,36 +666,58 @@ def append_log(message: str) -> None:
             job["logs"] = job["logs"][-3000:]
 
 
-def scan_image_library(root: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    root = ROOT if root is None else root
-    image_files: list[dict[str, Any]] = []
-    folder_counts: dict[str, int] = {}
-    for current, directories, filenames in os.walk(root, followlinks=False):
+def list_managed_directory(relative_path: str) -> dict[str, Any]:
+    current = ROOT if not relative_path else resolve_managed_path(relative_path)
+    if not current.exists() or not current.is_dir() or current.is_symlink():
+        raise FileNotFoundError("文件夹不存在或无法访问。")
+
+    folders: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
+    for child in current.iterdir():
+        if child.is_symlink():
+            continue
+        if child.is_dir():
+            if child.name.lower() in PROTECTED_DIRS:
+                continue
+            image_count = count_managed_images(child)
+            if not image_count:
+                continue
+            relative = child.relative_to(ROOT).as_posix()
+            folders.append({
+                "name": child.name,
+                "path": relative,
+                "image_count": image_count,
+            })
+        elif child.is_file() and child.suffix.lower() in IMAGE_EXTENSIONS:
+            relative = child.relative_to(ROOT).as_posix()
+            images.append({
+                "name": child.name,
+                "path": relative,
+                "size": child.stat().st_size,
+            })
+
+    return {
+        "path": "" if current == ROOT else current.relative_to(ROOT).as_posix(),
+        "folders": sorted(folders, key=lambda item: item["name"].casefold()),
+        "images": sorted(images, key=lambda item: item["name"].casefold()),
+    }
+
+
+def count_managed_images(path: Path) -> int:
+    count = 0
+    for current, directories, filenames in os.walk(path, followlinks=False):
         current_path = Path(current)
         directories[:] = [
             name for name in directories
             if name.lower() not in PROTECTED_DIRS
             and not (current_path / name).is_symlink()
         ]
-        for filename in filenames:
-            path = current_path / filename
-            if path.suffix.lower() not in IMAGE_EXTENSIONS or path.is_symlink():
-                continue
-            relative = path.relative_to(root).as_posix()
-            image_files.append({
-                "path": relative,
-                "size": path.stat().st_size,
-            })
-            parent = path.parent
-            while parent != root:
-                folder = parent.relative_to(root).as_posix()
-                folder_counts[folder] = folder_counts.get(folder, 0) + 1
-                parent = parent.parent
-    folders = [
-        {"path": path, "image_count": count}
-        for path, count in sorted(folder_counts.items())
-    ]
-    return folders, sorted(image_files, key=lambda item: item["path"].casefold())
+        count += sum(
+            1 for name in filenames
+            if Path(name).suffix.lower() in IMAGE_EXTENSIONS
+            and not (current_path / name).is_symlink()
+        )
+    return count
 
 
 def resolve_managed_path(relative_path: Any) -> Path:
@@ -646,7 +781,7 @@ def delete_managed_item(relative_path: Any, kind: Any) -> None:
     raise ValueError("删除类型必须是 image 或 folder。")
 
 
-def run_crawler(command: list[str], api_key: str | None = None) -> None:
+def run_crawler(command: list[str]) -> None:
     with job_lock:
         job["status"] = "running"
     try:
@@ -654,8 +789,6 @@ def run_crawler(command: list[str], api_key: str | None = None) -> None:
         child_env.pop("HF_TOKEN", None)
         child_env.pop("HUGGINGFACEHUB_API_TOKEN", None)
         child_env.pop("MISTRAL_API_KEY", None)
-        if api_key is not None:
-            child_env["MISTRAL_API_KEY"] = api_key
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -696,7 +829,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self) -> None:
-        if self.path == "/":
+        request = urlsplit(self.path)
+        if request.path == "/":
             page = PAGE.replace(
                 "__DEFAULT_OUTPUT__",
                 html.escape(str(DEFAULT_OUTPUT), quote=True),
@@ -709,10 +843,10 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        if self.path == "/api/metrics":
+        if request.path == "/api/metrics":
             self.send_json(METRIC_NAMES)
             return
-        if self.path == "/api/status":
+        if request.path == "/api/status":
             with job_lock:
                 snapshot = {
                     **job,
@@ -720,16 +854,49 @@ class Handler(BaseHTTPRequestHandler):
                 }
             self.send_json(snapshot)
             return
-        if self.path == "/api/mistral-key/status":
+        if request.path == "/api/mistral-key/status":
             with job_lock:
                 configured = mistral_api_key is not None
             self.send_json({"configured": configured})
             return
-        if self.path == "/api/manage/list":
-            folders, images = scan_image_library()
-            self.send_json({"folders": folders, "images": images})
+        if request.path == "/api/manage/list":
+            try:
+                relative_path = parse_qs(request.query).get("path", [""])[0]
+                self.send_json(list_managed_directory(relative_path))
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, 404)
+            except (ValueError, OSError) as exc:
+                self.send_json({"error": str(exc)}, 400)
+            return
+        if request.path == "/api/manage/image":
+            self.send_managed_image(parse_qs(request.query).get("path", [""])[0])
             return
         self.send_json({"error": "Not found"}, 404)
+
+    def send_managed_image(self, relative_path: str) -> None:
+        try:
+            image_path = resolve_managed_path(relative_path)
+            if (
+                not image_path.exists()
+                or not image_path.is_file()
+                or image_path.is_symlink()
+                or image_path.suffix.lower() not in IMAGE_EXTENSIONS
+            ):
+                raise FileNotFoundError("照片不存在或格式不受支持。")
+            payload = image_path.read_bytes()
+        except FileNotFoundError as exc:
+            self.send_json({"error": str(exc)}, 404)
+            return
+        except (ValueError, OSError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(image_path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self) -> None:
         if self.path in {"/api/mistral-key", "/api/mistral-key/clear"}:
@@ -764,15 +931,9 @@ class Handler(BaseHTTPRequestHandler):
             if job["status"] in {"starting", "running"}:
                 self.send_json({"error": "已有抓取任务运行中。"}, 409)
                 return
-            api_key_for_job = None
-            if payload.get("mode") == "random_mistral":
-                if mistral_api_key is None:
-                    self.send_json({"error": "请先在 Ministral 模式中绑定 Mistral API Key。"}, 400)
-                    return
-                api_key_for_job = mistral_api_key
             job.update(status="starting", logs=[], returncode=None, error=None)
 
-        worker = threading.Thread(target=run_crawler, args=(command, api_key_for_job), daemon=True)
+        worker = threading.Thread(target=run_crawler, args=(command,), daemon=True)
         worker.start()
         self.send_json({"status": "starting"}, 202)
 
@@ -915,7 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
         mode = payload.get("mode")
         threshold = payload.get("threshold")
         target_count = payload.get("target_count")
-        output_dir = payload.get("output_dir") or DEFAULT_OUTPUT
+        output_dir = payload.get("output_dir") or str(DEFAULT_OUTPUT)
         if mode not in {"metrics", "custom"}:
             raise ValueError("请选择指标改写或自定义话题模式。")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.35 <= threshold <= 0.95:

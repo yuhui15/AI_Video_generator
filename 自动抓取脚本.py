@@ -89,13 +89,20 @@ def safe_path_component(value):
     return cleaned or "custom_topic"
 
 
+def looksmax_search_query(query):
+    query = re.sub(r"\s+", " ", query).strip()
+    if "site:looksmax.org" not in query.casefold():
+        query = f"{query[:280].rstrip()} site:looksmax.org"
+    return query[:300]
+
+
 def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "随机 Mistral 模式需要 Mistral API Key。请在网页的 Mistral API Key 输入框中绑定密钥。"
+            "搜索词改写需要 Mistral API Key。请在网页的 Mistral API Key 输入框中绑定密钥。"
         )
-    model_name = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL_NAME)
+    model_name = MISTRAL_MODEL_NAME
     try:
         response = requests.post(
             "https://api.mistral.ai/v1/chat/completions",
@@ -150,9 +157,7 @@ def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
     rewritten = re.sub(r"\s+", " ", content).strip().strip("\"'")
     if not rewritten:
         raise RuntimeError(f"Mistral 返回了空搜索词（模型：{model_name}）。")
-    if "site:looksmax.org" not in rewritten.casefold():
-        rewritten = f"{rewritten} site:looksmax.org"
-    return rewritten[:300]
+    return looksmax_search_query(rewritten)
 
 
 def check_image_matches_metric(image_path, prob_threshold=0.5):
@@ -388,8 +393,8 @@ if __name__ == "__main__":
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parent / "抓取结果"),
-        help="图片保存根目录（默认是项目根目录下的抓取结果）；分类子文件夹会创建在该目录内",
+        default=str(Path(__file__).resolve().parent),
+        help="图片保存根目录（默认是项目根目录）；分类子文件夹会创建在该目录内",
     )
     args = parser.parse_args()
 
@@ -438,13 +443,16 @@ if __name__ == "__main__":
         if has_high and len(set(args.metric)) != 1:
             parser.error("提供改写搜索词时只能选择一个指标。")
         selected_metrics = {
-            name: comprehensive_63_metrics[name]
+            name: {
+                level: dict(info)
+                for level, info in comprehensive_63_metrics[name].items()
+            }
             for name in dict.fromkeys(args.metric)
         }
         if has_high:
             metric_levels = selected_metrics[args.metric[0]]
-            metric_levels["high"]["query"] = args.rewritten_query_high
-            metric_levels["low"]["query"] = args.rewritten_query_low
+            metric_levels["high"]["query"] = looksmax_search_query(args.rewritten_query_high)
+            metric_levels["low"]["query"] = looksmax_search_query(args.rewritten_query_low)
     else:
         selected_metrics = comprehensive_63_metrics
 
