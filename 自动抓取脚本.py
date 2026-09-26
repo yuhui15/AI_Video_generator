@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import time
 import requests
@@ -17,6 +18,7 @@ except ImportError:
     CV2_AVAILABLE = False
 
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
+MISTRAL_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"
 clip_model = None
 clip_processor = None
 torch = None
@@ -68,6 +70,83 @@ def is_valid_face_image(image_path):
 def safe_path_component(value):
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value)).strip(" .")
     return cleaned or "custom_topic"
+
+
+def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "随机 Mistral 模式需要 Hugging Face Token。请在启动网页的 PowerShell 中先设置 "
+            "$env:HF_TOKEN='hf_...'，再启动抓取控制台。"
+        )
+    try:
+        from huggingface_hub import InferenceClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 huggingface_hub。请运行 pip install -r requirements-scraper.txt。"
+        ) from exc
+
+    model_name = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL_NAME)
+    client = InferenceClient(
+        model=model_name,
+        provider="auto",
+        token=token,
+        timeout=90,
+    )
+    try:
+        response = client.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You rewrite image-search queries. Return only one concise English Bing Images "
+                        "query, with no quotes, explanation, numbering, or Markdown. Preserve the "
+                        "specified facial metric and its high/low direction. Prefer neutral, non-explicit "
+                        "adult portrait photography terms. Do not add a person’s name, medical claim, "
+                        "or unrelated traits."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Metric: {metric_name}\n"
+                        f"Requested level: {level_desc}\n"
+                        f"Original image-search query: {original_query}\n"
+                        "Rewrite this query for image search while preserving its meaning."
+                    ),
+                },
+            ],
+            max_tokens=96,
+            temperature=0.2,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"无法调用 Mistral 模型 {model_name}：{exc}。请检查 HF_TOKEN、"
+            "模型的 Inference Providers 可用性以及账号额度。"
+        ) from exc
+    content = response.choices[0].message.content
+    if not isinstance(content, str):
+        raise RuntimeError(f"Mistral 返回了无法识别的查询格式（模型：{model_name}）。")
+    rewritten = re.sub(r"\s+", " ", content).strip().strip("\"'")
+    if not rewritten:
+        raise RuntimeError(f"Mistral 返回了空搜索词（模型：{model_name}）。")
+    return rewritten[:300]
+
+
+def choose_random_mistral_metric(metrics_dict):
+    metric_name = random.choice(list(metrics_dict))
+    levels = metrics_dict[metric_name]
+    print(f"[random] 从 63 项指标中随机抽中：{metric_name}")
+    rewritten_levels = {}
+    for level, info in levels.items():
+        rewritten_query = rewrite_search_query_with_mistral(
+            metric_name,
+            info["desc"],
+            info["query"],
+        )
+        rewritten_levels[level] = {**info, "query": rewritten_query}
+        print(f"[Mistral] 改写 [{level}/{info['desc']}]：{rewritten_query}")
+    return metric_name, {metric_name: rewritten_levels}
 
 
 def check_image_matches_metric(image_path, prob_threshold=0.5):
@@ -296,6 +375,11 @@ if __name__ == "__main__":
     parser.add_argument("--list-metrics", action="store_true", help="输出内置指标名称 JSON")
     parser.add_argument("--metric", action="append", help="选择内置指标，可重复传入")
     parser.add_argument("--custom-topic", help="使用自定义搜索话题")
+    parser.add_argument(
+        "--random-mistral",
+        action="store_true",
+        help="从 63 项指标中随机抽取一项，并用 Hugging Face 上的 Mistral 7B 改写搜索词",
+    )
     parser.add_argument("--target-count", type=int, default=20, help="每个级别目标图片数")
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
     parser.add_argument(
@@ -312,10 +396,13 @@ if __name__ == "__main__":
         parser.error("--target-count 必须在 1 到 1000 之间")
     if not 0.01 <= args.clip_threshold <= 0.99:
         parser.error("--clip-threshold 必须在 0.01 到 0.99 之间")
-    if args.custom_topic and args.metric:
-        parser.error("--custom-topic 与 --metric 不能同时使用")
+    selected_modes = sum((bool(args.custom_topic), bool(args.metric), args.random_mistral))
+    if selected_modes > 1:
+        parser.error("--custom-topic、--metric 和 --random-mistral 只能选择一种")
 
-    if args.custom_topic:
+    if args.random_mistral:
+        _, selected_metrics = choose_random_mistral_metric(comprehensive_63_metrics)
+    elif args.custom_topic:
         custom_topic = args.custom_topic.strip()
         if not custom_topic:
             parser.error("--custom-topic 不能为空")

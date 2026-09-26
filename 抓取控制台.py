@@ -92,14 +92,15 @@ PAGE = r"""<!doctype html>
 <main>
   <header>
     <h1>图片抓取控制台</h1>
-    <p>选择 63 项指标或输入自己的搜索话题，调整 CLIP 筛选严格度，然后启动抓取。</p>
+    <p>可查看 63 项预设指标；手动选择、随机抽取并用 Mistral 7B 改写，或输入自定义话题。</p>
     <span class="badge">仅监听本机 · 不会公开到网络</span>
   </header>
   <form id="crawl-form">
     <section class="panel">
       <h2>1. 选择抓取内容</h2>
       <div class="mode">
-        <label><input type="radio" name="mode" value="metrics" checked> 从 comprehensive_63_metrics 选择</label>
+        <label><input type="radio" name="mode" value="metrics" checked> 手动选择 63 项指标</label>
+        <label><input type="radio" name="mode" value="random_mistral"> 随机抽 1 项 + Mistral 7B 改写</label>
         <label><input type="radio" name="mode" value="custom"> 自定义搜索话题</label>
       </div>
       <div id="metric-section" class="field">
@@ -110,7 +111,11 @@ PAGE = r"""<!doctype html>
           <span class="help" id="selected-count"></span>
         </div>
         <div id="metrics" aria-label="指标列表"></div>
-        <p class="help">可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。</p>
+        <p class="help" id="metric-help">可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。</p>
+      </div>
+      <div id="random-section" class="field" hidden>
+        <p class="help">启动后会从全部 63 项中随机抽取一项，将其 high / low 搜索词分别交给 Mistral 7B 改写，再用于 Bing 图片搜索。需要 Hugging Face Token；请在启动网页的 PowerShell 中设置 <code>HF_TOKEN</code>。令牌不在网页中显示或写入任务日志。</p>
+        <p class="help">模型：mistralai/Mistral-7B-Instruct-v0.3（通过 Hugging Face Inference Providers 托管调用）</p>
       </div>
       <div id="custom-section" class="field" hidden>
         <label for="custom-topic">抓取标题 / 搜索话题</label>
@@ -161,7 +166,17 @@ let timer = null;
 
 function updateMode() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  document.getElementById("metric-section").hidden = mode !== "metrics";
+  const manual = mode === "metrics";
+  const metricSection = document.getElementById("metric-section");
+  metricSection.hidden = mode === "custom";
+  metricsRoot.querySelectorAll("input").forEach(item => { item.disabled = !manual; });
+  document.getElementById("metric-filter").disabled = !manual;
+  document.getElementById("select-all").disabled = !manual;
+  document.getElementById("clear-all").disabled = !manual;
+  document.getElementById("metric-help").textContent = manual
+    ? "可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。"
+    : "列表仅供查看；抓取时会忽略手动勾选，并从全部 63 项中随机抽取一项。";
+  document.getElementById("random-section").hidden = mode !== "random_mistral";
   document.getElementById("custom-section").hidden = mode !== "custom";
 }
 function updateCount() {
@@ -196,6 +211,7 @@ async function loadMetrics() {
     label.append(checkbox, text);
     metricsRoot.append(label);
   }
+  updateMode();
   updateCount();
 }
 document.querySelectorAll('input[name="mode"]').forEach(item => item.addEventListener("change", updateMode));
@@ -369,8 +385,8 @@ class Handler(BaseHTTPRequestHandler):
         threshold = payload.get("threshold")
         target_count = payload.get("target_count")
         output_dir = payload.get("output_dir") or DEFAULT_OUTPUT
-        if mode not in {"metrics", "custom"}:
-            raise ValueError("请选择指标模式或自定义话题模式。")
+        if mode not in {"metrics", "random_mistral", "custom"}:
+            raise ValueError("请选择手动指标、Mistral 随机抽取或自定义话题模式。")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.35 <= threshold <= 0.95:
             raise ValueError("CLIP 严格度必须在 0.35 到 0.95 之间。")
         if isinstance(target_count, bool) or not isinstance(target_count, int) or not 1 <= target_count <= 1000:
@@ -388,7 +404,9 @@ class Handler(BaseHTTPRequestHandler):
             "--output-dir",
             str(Path(output_dir).expanduser()),
         ]
-        if mode == "custom":
+        if mode == "random_mistral":
+            command.append("--random-mistral")
+        elif mode == "custom":
             topic = payload.get("custom_topic")
             if not isinstance(topic, str) or not topic.strip() or len(topic) > 240:
                 raise ValueError("自定义搜索话题不能为空，且不能超过 240 个字符。")
