@@ -41,7 +41,7 @@ job: dict[str, Any] = {
     "returncode": None,
     "error": None,
 }
-mistral_token: str | None = None
+mistral_api_key: str | None = None
 
 
 def load_metric_names() -> list[str]:
@@ -180,7 +180,7 @@ PAGE = r"""<!doctype html>
       <h2>1. 选择抓取内容</h2>
       <div class="mode">
         <label><input type="radio" name="mode" value="metrics" checked> 手动选择 63 项指标</label>
-        <label><input type="radio" name="mode" value="random_mistral"> 随机抽 1 项 + Mistral 7B 改写</label>
+        <label><input type="radio" name="mode" value="random_mistral"> 随机抽 1 项 + Ministral 14B 改写</label>
         <label><input type="radio" name="mode" value="custom"> 自定义搜索话题</label>
       </div>
       <div id="metric-section" class="field">
@@ -194,16 +194,16 @@ PAGE = r"""<!doctype html>
         <p class="help" id="metric-help">可选择一个或多个指标；每个指标包含脚本中定义的 high / low 搜索词。</p>
       </div>
       <div id="random-section" class="field" hidden>
-        <p class="help">启动后会从全部 63 项中随机抽取一项，将其 high / low 搜索词分别交给 Mistral 7B 改写，再用于 Bing 图片搜索。</p>
-        <p class="help">模型：mistralai/Mistral-7B-Instruct-v0.3（通过 Hugging Face Inference Providers 托管调用）</p>
-        <label for="hf-token">Hugging Face Access Token</label>
+        <p class="help">启动后会从全部 63 项中随机抽取一项，将其 high / low 搜索词分别交给 Ministral 14B 改写，再用于 Bing 图片搜索。</p>
+        <p class="help">模型：ministral-14b-2512（通过 Mistral API 调用）</p>
+        <label for="mistral-api-key">Mistral API Key</label>
         <div class="token-controls">
-          <input id="hf-token" type="password" autocomplete="new-password" spellcheck="false" placeholder="hf_..." aria-describedby="token-help token-status">
-          <button type="button" id="bind-token">绑定 Token</button>
-          <button type="button" id="clear-token">清除 Token</button>
+          <input id="mistral-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴 Mistral API Key" aria-describedby="token-help token-status">
+          <button type="button" id="bind-token">绑定 API Key</button>
+          <button type="button" id="clear-token">清除 API Key</button>
         </div>
-        <p class="help" id="token-help">Token 只保存在本机服务内存中，并在抓取时传给子进程；不会写入文件、浏览器存储或任务日志。关闭服务后需重新输入。</p>
-        <p id="token-status" role="status" aria-live="polite" data-configured="false">正在检查 Token 状态…</p>
+        <p class="help" id="token-help">API Key 只保存在本机服务内存中，并在抓取时传给子进程；不会写入文件、浏览器存储或任务日志。关闭服务后需重新输入。</p>
+        <p id="token-status" role="status" aria-live="polite" data-configured="false">正在检查 API Key 状态…</p>
       </div>
       <div id="custom-section" class="field" hidden>
         <label for="custom-topic">抓取标题 / 搜索话题</label>
@@ -256,7 +256,7 @@ const managerPage = document.getElementById("manager-page");
 const libraryList = document.getElementById("library-list");
 const libraryStatus = document.getElementById("library-status");
 const metricFilter = document.getElementById("metric-filter");
-const tokenInput = document.getElementById("hf-token");
+const tokenInput = document.getElementById("mistral-api-key");
 const tokenStatus = document.getElementById("token-status");
 let timer = null;
 
@@ -312,43 +312,43 @@ async function loadMetrics() {
 }
 async function refreshTokenStatus() {
   try {
-    const response = await fetch("/api/token/status", {cache:"no-store"});
+    const response = await fetch("/api/mistral-key/status", {cache:"no-store"});
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "无法读取 Token 状态");
+    if (!response.ok) throw new Error(data.error || "无法读取 API Key 状态");
     tokenStatus.dataset.configured = String(data.configured);
     tokenStatus.textContent = data.configured
-      ? "Token 已绑定到本机服务（只显示状态，不回显 Token）。"
-      : "尚未绑定 Token；使用 Mistral 随机模式前请先绑定。";
+      ? "Mistral API Key 已绑定到本机服务（只显示状态，不回显密钥）。"
+      : "尚未绑定 Mistral API Key；使用 Ministral 随机模式前请先绑定。";
   } catch (error) {
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = `Token 状态读取失败：${error.message}`;
+    tokenStatus.textContent = `API Key 状态读取失败：${error.message}`;
   }
 }
 document.getElementById("bind-token").addEventListener("click", async () => {
   const token = tokenInput.value.trim();
   if (!token) {
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = "请先输入 Hugging Face Token。";
+    tokenStatus.textContent = "请先输入 Mistral API Key。";
     tokenInput.focus();
     return;
   }
   const button = document.getElementById("bind-token");
   button.disabled = true;
   try {
-    const response = await fetch("/api/token", {
+    const response = await fetch("/api/mistral-key", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       cache:"no-store",
-      body:JSON.stringify({token})
+      body:JSON.stringify({api_key:token})
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Token 绑定失败");
+    if (!response.ok) throw new Error(data.error || "API Key 绑定失败");
     tokenInput.value = "";
     tokenStatus.dataset.configured = "true";
-    tokenStatus.textContent = "Token 已绑定到本机服务内存；页面不会保存或回显它。";
+    tokenStatus.textContent = "Mistral API Key 已绑定到本机服务内存；页面不会保存或回显它。";
   } catch (error) {
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = `Token 绑定失败：${error.message}`;
+    tokenStatus.textContent = `API Key 绑定失败：${error.message}`;
   } finally {
     button.disabled = false;
   }
@@ -357,19 +357,19 @@ document.getElementById("clear-token").addEventListener("click", async () => {
   const button = document.getElementById("clear-token");
   button.disabled = true;
   try {
-    const response = await fetch("/api/token/clear", {
+    const response = await fetch("/api/mistral-key/clear", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       cache:"no-store",
       body:"{}"
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Token 清除失败");
+    if (!response.ok) throw new Error(data.error || "API Key 清除失败");
     tokenInput.value = "";
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = "Token 已从本机服务内存中清除。";
+    tokenStatus.textContent = "Mistral API Key 已从本机服务内存中清除。";
   } catch (error) {
-    tokenStatus.textContent = `Token 清除失败：${error.message}`;
+    tokenStatus.textContent = `API Key 清除失败：${error.message}`;
   } finally {
     button.disabled = false;
   }
@@ -611,15 +611,16 @@ def delete_managed_item(relative_path: Any, kind: Any) -> None:
     raise ValueError("删除类型必须是 image 或 folder。")
 
 
-def run_crawler(command: list[str], token: str | None = None) -> None:
+def run_crawler(command: list[str], api_key: str | None = None) -> None:
     with job_lock:
         job["status"] = "running"
     try:
         child_env = os.environ.copy()
         child_env.pop("HF_TOKEN", None)
         child_env.pop("HUGGINGFACEHUB_API_TOKEN", None)
-        if token is not None:
-            child_env["HF_TOKEN"] = token
+        child_env.pop("MISTRAL_API_KEY", None)
+        if api_key is not None:
+            child_env["MISTRAL_API_KEY"] = api_key
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -684,9 +685,9 @@ class Handler(BaseHTTPRequestHandler):
                 }
             self.send_json(snapshot)
             return
-        if self.path == "/api/token/status":
+        if self.path == "/api/mistral-key/status":
             with job_lock:
-                configured = mistral_token is not None
+                configured = mistral_api_key is not None
             self.send_json({"configured": configured})
             return
         if self.path == "/api/manage/list":
@@ -696,9 +697,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "Not found"}, 404)
 
     def do_POST(self) -> None:
-        if self.path in {"/api/token", "/api/token/clear"}:
+        if self.path in {"/api/mistral-key", "/api/mistral-key/clear"}:
             if not self.is_same_origin_request():
-                self.send_json({"error": "Token 请求只允许来自当前本机网页。"}, 403)
+                self.send_json({"error": "API Key 请求只允许来自当前本机网页。"}, 403)
                 return
             self.update_token()
             return
@@ -722,15 +723,15 @@ class Handler(BaseHTTPRequestHandler):
             if job["status"] in {"starting", "running"}:
                 self.send_json({"error": "已有抓取任务运行中。"}, 409)
                 return
-            token_for_job = None
+            api_key_for_job = None
             if payload.get("mode") == "random_mistral":
-                if mistral_token is None:
-                    self.send_json({"error": "请先在 Mistral 模式中绑定 Hugging Face Token。"}, 400)
+                if mistral_api_key is None:
+                    self.send_json({"error": "请先在 Ministral 模式中绑定 Mistral API Key。"}, 400)
                     return
-                token_for_job = mistral_token
+                api_key_for_job = mistral_api_key
             job.update(status="starting", logs=[], returncode=None, error=None)
 
-        worker = threading.Thread(target=run_crawler, args=(command, token_for_job), daemon=True)
+        worker = threading.Thread(target=run_crawler, args=(command, api_key_for_job), daemon=True)
         worker.start()
         self.send_json({"status": "starting"}, 202)
 
@@ -751,8 +752,8 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def update_token(self) -> None:
-        global mistral_token
-        is_clear = self.path == "/api/token/clear"
+        global mistral_api_key
+        is_clear = self.path == "/api/mistral-key/clear"
         if is_clear:
             token = None
         else:
@@ -763,18 +764,18 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length))
                 if not isinstance(payload, dict):
                     raise ValueError("请求格式错误。")
-                token_value = payload.get("token")
+                token_value = payload.get("api_key")
                 if not isinstance(token_value, str):
-                    raise ValueError("请输入有效的 Hugging Face Token。")
+                    raise ValueError("请输入有效的 Mistral API Key。")
                 token = token_value.strip()
                 if not token or len(token) > 4096 or any(ord(char) < 32 for char in token):
-                    raise ValueError("Token 不能为空、不能超过 4096 个字符，也不能包含控制字符。")
+                    raise ValueError("API Key 不能为空、不能超过 4096 个字符，也不能包含控制字符。")
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self.send_json({"error": str(exc)}, 400)
                 return
 
         with job_lock:
-            mistral_token = token
+            mistral_api_key = token
         self.send_json({"configured": token is not None})
 
     def delete_library_item(self) -> None:

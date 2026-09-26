@@ -36,7 +36,7 @@ except ImportError:
     CV2_AVAILABLE = False
 
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-MISTRAL_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"
+MISTRAL_MODEL_NAME = "ministral-14b-2512"
 clip_model = None
 clip_processor = None
 torch = None
@@ -91,58 +91,60 @@ def safe_path_component(value):
 
 
 def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
-    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-    if not token:
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
         raise RuntimeError(
-            "随机 Mistral 模式需要 Hugging Face Token。请在启动网页的 PowerShell 中先设置 "
-            "$env:HF_TOKEN='hf_...'，再启动抓取控制台。"
+            "随机 Mistral 模式需要 Mistral API Key。请在网页的 Mistral API Key 输入框中绑定密钥。"
         )
-    try:
-        from huggingface_hub import InferenceClient
-    except ImportError as exc:
-        raise RuntimeError(
-            "缺少 huggingface_hub。请运行 pip install -r requirements-scraper.txt。"
-        ) from exc
-
     model_name = os.getenv("MISTRAL_MODEL", MISTRAL_MODEL_NAME)
-    client = InferenceClient(
-        model=model_name,
-        provider="auto",
-        token=token,
-        timeout=90,
-    )
     try:
-        response = client.chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You rewrite image-search queries. Return only one concise English Bing Images "
-                        "query, with no quotes, explanation, numbering, or Markdown. Preserve the "
-                        "specified facial metric and its high/low direction. Prefer neutral, non-explicit "
-                        "adult portrait photography terms. Do not add a person’s name, medical claim, "
-                        "or unrelated traits."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Metric: {metric_name}\n"
-                        f"Requested level: {level_desc}\n"
-                        f"Original image-search query: {original_query}\n"
-                        "Rewrite this query for image search while preserving its meaning."
-                    ),
-                },
-            ],
-            max_tokens=96,
-            temperature=0.2,
+        response = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You rewrite image-search queries. Return only one concise English Bing Images "
+                            "query, with no quotes, explanation, numbering, or Markdown. Preserve the "
+                            "specified facial metric and its high/low direction. Prefer neutral, non-explicit "
+                            "adult portrait photography terms. Do not add a person’s name, medical claim, "
+                            "or unrelated traits."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Metric: {metric_name}\n"
+                            f"Requested level: {level_desc}\n"
+                            f"Original image-search query: {original_query}\n"
+                            "Rewrite this query for image search while preserving its meaning."
+                        ),
+                    },
+                ],
+                "max_tokens": 96,
+                "temperature": 0.2,
+            },
+            timeout=90,
         )
-    except Exception as exc:
+        response.raise_for_status()
+        result = response.json()
+    except requests.RequestException as exc:
         raise RuntimeError(
-            f"无法调用 Mistral 模型 {model_name}：{exc}。请检查 HF_TOKEN、"
-            "模型的 Inference Providers 可用性以及账号额度。"
+            f"无法调用 Mistral 模型 {model_name}：{exc}。请检查 Mistral API Key、"
+            "模型访问权限和账户额度。"
         ) from exc
-    content = response.choices[0].message.content
+    except ValueError as exc:
+        raise RuntimeError(f"Mistral API 返回了无效 JSON（模型：{model_name}）。") from exc
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Mistral API 返回了无法识别的响应（模型：{model_name}）。") from exc
     if not isinstance(content, str):
         raise RuntimeError(f"Mistral 返回了无法识别的查询格式（模型：{model_name}）。")
     rewritten = re.sub(r"\s+", " ", content).strip().strip("\"'")
@@ -396,7 +398,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--random-mistral",
         action="store_true",
-        help="从 63 项指标中随机抽取一项，并用 Hugging Face 上的 Mistral 7B 改写搜索词",
+        help="从 63 项指标中随机抽取一项，并用 Mistral Ministral 14B 改写搜索词",
     )
     parser.add_argument("--target-count", type=int, default=20, help="每个级别目标图片数")
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")

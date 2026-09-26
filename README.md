@@ -3,12 +3,12 @@
 这是一个 Windows 本地图片抓取工具。网页控制台可以：
 
 - 查看并手动选择 `comprehensive_63_metrics` 中的 63 项预设指标；
-- 随机抽取一个预设指标，并调用 Hugging Face 托管的 Mistral 7B 改写 high/low 图片搜索词；
+- 随机抽取一个预设指标，并调用 Mistral Ministral 14B 改写 high/low 图片搜索词；
 - 输入自己的图片搜索话题；
 - 调整 CLIP 筛选阈值、每个级别目标图片数和输出目录；
 - 查看抓取任务状态和实时日志。
 
-网页服务只绑定到本机 `127.0.0.1`，不对局域网或公网开放。Mistral 7B 通过 Hugging Face Inference Providers 远程调用，不会下载模型权重到本机。CLIP 模型在首次筛选图片时会从 Hugging Face 下载并在本机运行。
+网页服务只绑定到本机 `127.0.0.1`，不对局域网或公网开放。Ministral 14B 通过 Mistral API 远程调用，不会下载模型权重到本机。CLIP 模型在首次筛选图片时会从 Hugging Face 下载并在本机运行。
 
 ## 系统要求
 
@@ -34,15 +34,15 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-scraper.txt
 ```
 
-如果电脑没有 Python 3.11，可将 `py -3.11` 换成已安装的 Python 启动器版本，例如 `py -3.12`。不要将 Hugging Face Token 写入 Python 文件、README 或提交到 Git。
+如果电脑没有 Python 3.11，可将 `py -3.11` 换成已安装的 Python 启动器版本，例如 `py -3.12`。不要将 Mistral API Key 写入 Python 文件、README 或提交到 Git。
 
-## 配置 Hugging Face Token
+## 配置 Mistral API Key
 
-只有使用“随机抽取 + Mistral 7B 改写”时需要 Token。在网页选择该模式后，直接在 Hugging Face Token 输入框中粘贴 User Access Token，再点击“绑定 Token”。Token 只保存在运行控制台的本机 Python 进程内存中，随机抓取任务启动时才通过子进程环境变量传入；不会写入项目文件、浏览器存储、URL 或任务日志。关闭控制台服务后 Token 会清除，需要重新输入。
+只有使用“随机抽取 + Ministral 14B 改写”时需要 Mistral API Key。在网页选择该模式后，粘贴从 Mistral 控制台创建的 API Key，再点击“绑定 API Key”。密钥只保存在运行控制台的本机 Python 进程内存中，随机抓取任务启动时才通过子进程环境变量传入；不会写入项目文件、浏览器存储、URL 或任务日志。关闭控制台服务后密钥会清除，需要重新输入。
 
-绑定 Token 的接口仅接受当前本机网页的同源请求；页面上的“清除 Token”按钮会立即从服务内存中删除它。Token 不会通过 API 回传，页面只显示是否已绑定。请创建有权调用所选 Hugging Face Inference Provider 的 Token，并避免在不可信设备上输入。
+绑定密钥的接口仅接受当前本机网页的同源请求；页面上的“清除 API Key”按钮会立即从服务内存中删除它。密钥不会通过 API 回传，页面只显示是否已绑定。请确认 Mistral 账户已开通 API 调用权限和额度，并避免在不可信设备上输入。
 
-手动选择 63 项或使用自定义搜索话题不需要 Mistral Token。
+手动选择 63 项或使用自定义搜索话题不需要 Mistral API Key。
 
 ## 启动网页
 
@@ -73,11 +73,11 @@ http://127.0.0.1:8765
 
 ### 随机抽取并由 Mistral 改写
 
-1. 选择“随机抽 1 项 + Mistral 7B 改写”。
-2. 输入 Hugging Face Token 并点击“绑定 Token”，确认页面显示已绑定。
+1. 选择“随机抽 1 项 + Ministral 14B 改写”。
+2. 输入 Mistral API Key 并点击“绑定 API Key”，确认页面显示已绑定。
 3. 设置筛选和保存选项，然后开始抓取。
 
-每次启动任务时，程序从全部 63 项中随机选一项，并调用 `mistralai/Mistral-7B-Instruct-v0.3` 分别改写该指标的 high/low 搜索词。改写结果会显示在任务日志中。如果 Token、模型托管服务或账号额度有问题，任务会报告错误并停止，不会静默切换回原搜索词。
+每次启动任务时，程序从全部 63 项中随机选一项，并调用 `ministral-14b-2512` 分别改写该指标的 high/low 搜索词。改写结果会显示在任务日志中。如果 API Key、模型服务或账户额度有问题，任务会报告错误并停止，不会静默切换回原搜索词。
 
 ### 自定义搜索话题
 
@@ -146,12 +146,12 @@ AI_Video_generator/
 - **页面无法打开**：确认控制台终端仍在运行，并访问 `http://127.0.0.1:8765`。
 - **Chrome/ChromeDriver 启动失败**：确认 Google Chrome 已安装；首次启动时网络可能需要访问 ChromeDriver 下载源。
 - **CLIP 载入或筛选失败**：确认依赖已安装且可访问 Hugging Face。第一次载入会下载模型；模型加载错误会写入抓取日志。
-- **Mistral 认证或 Provider 错误**：确认网页显示 Token 已绑定、Token 有效，并且 Hugging Face 账户可使用该模型的 Inference Provider。
+- **Mistral API 认证或调用错误**：确认网页显示 API Key 已绑定、密钥有效，并且 Mistral 账户已开通 API 权限和额度。
 - **筛选后图片不足**：尝试降低 CLIP 阈值、降低目标数量，或调整搜索词。搜索结果是否充足取决于搜索服务和来源。
 
 ## 图片使用与隐私
 
-请遵守搜索引擎、图片来源网站的使用条款，并在使用或再发布图片前核实授权、版权和肖像权。不要将抓取的私人、敏感或未经许可的个人照片用于公开发布。网页只监听本机，但图片搜索和 Mistral API 请求会访问第三方服务；Mistral 会收到所选指标名称和对应搜索词，不会收到你的 Hugging Face Token 以外的本地文件。
+请遵守搜索引擎、图片来源网站的使用条款，并在使用或再发布图片前核实授权、版权和肖像权。不要将抓取的私人、敏感或未经许可的个人照片用于公开发布。网页只监听本机，但图片搜索和 Mistral API 请求会访问第三方服务；Mistral 会收到所选指标名称和对应搜索词，不会收到 API Key 或其他本地文件。
 
 ## Git 忽略规则
 
