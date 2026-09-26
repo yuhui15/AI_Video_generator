@@ -21,6 +21,12 @@ class PublisherEditorNotFound(RuntimeError):
         self.driver = driver
 
 
+class PublisherManualIntervention(RuntimeError):
+    def __init__(self, driver: uc.Chrome, message: str) -> None:
+        super().__init__(message)
+        self.driver = driver
+
+
 def open_filled_draft(
     image_paths: list[Path],
     title: str,
@@ -39,6 +45,15 @@ def open_filled_draft(
         status_callback("正在打开小红书创作者平台；如未登录，请在浏览器中完成登录。")
         driver.get(CREATOR_URL)
         wait = WebDriverWait(driver, 180)
+        status_callback("正在切换到小红书图片上传模式。")
+        try:
+            WebDriverWait(driver, 45).until(_click_image_tab)
+        except TimeoutException as exc:
+            raise PublisherManualIntervention(
+                driver,
+                "未找到小红书的“图片”标签页。请在打开的浏览器中先进入图文发布，并切换到“图片”标签后再重试。浏览器会保持打开。",
+            ) from exc
+
         file_input = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
         )
@@ -82,6 +97,8 @@ def open_filled_draft(
         return driver
     except PublisherEditorNotFound:
         raise
+    except PublisherManualIntervention:
+        raise
     except Exception as exc:
         try:
             driver.quit()
@@ -101,6 +118,25 @@ def _upload_images(driver: uc.Chrome, file_input, image_paths: list[Path]) -> No
             file_input,
         )
     file_input.send_keys("\n".join(str(path.resolve()) for path in image_paths))
+
+
+def _click_image_tab(driver: uc.Chrome) -> bool:
+    selectors = (
+        (By.XPATH, "//*[@role='tab' and normalize-space(.)='图片']"),
+        (By.XPATH, "//button[normalize-space(.)='图片']"),
+        (
+            By.XPATH,
+            "//*[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'tab') "
+            "and normalize-space(.)='图片']",
+        ),
+        (By.XPATH, "//*[@aria-label='图片' or @title='图片']"),
+    )
+    for by, selector in selectors:
+        for element in driver.find_elements(by, selector):
+            if element.is_displayed() and element.is_enabled():
+                element.click()
+                return True
+    return False
 
 
 def _first_visible(driver, locators):

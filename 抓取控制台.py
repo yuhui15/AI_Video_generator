@@ -18,7 +18,11 @@ from urllib.parse import parse_qs, urlsplit
 
 from xiaohongshu_publisher.copywriter import generate_copywriting
 from xiaohongshu_publisher.image_loader import build_post_images
-from xiaohongshu_publisher.publisher import PublisherEditorNotFound, open_filled_draft
+from xiaohongshu_publisher.publisher import (
+    PublisherEditorNotFound,
+    PublisherManualIntervention,
+    open_filled_draft,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -1068,6 +1072,11 @@ def run_publisher_browser(
     try:
         driver = open_filled_draft(image_paths, title, content, update_status)
     except PublisherEditorNotFound as exc:
+        with publisher_lock:
+            publisher_driver = exc.driver
+            publisher_state.update(status="ready", message=str(exc))
+        return
+    except PublisherManualIntervention as exc:
         with publisher_lock:
             publisher_driver = exc.driver
             publisher_state.update(status="ready", message=str(exc))
