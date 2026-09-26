@@ -32,7 +32,8 @@ def generate_copywriting(
         f"内容类别：{category}\n"
         f"图片分组与数量：{json.dumps(group_counts, ensure_ascii=False)}\n"
         f"创作者补充要求：{creator_prompt.strip() or '无'}\n\n"
-        "返回严格 JSON 对象，字段为 title 和 content，不要 Markdown 代码块。"
+        '只返回 JSON 对象，且必须包含两个字符串字段："title" 和 "content"。'
+        '格式示例：{"title":"标题","content":"正文"}。不要使用其他字段名，也不要返回 Markdown 代码块。'
         "标题最多 20 个字符，正文最多 1000 个字符。"
     )
     try:
@@ -66,11 +67,17 @@ def generate_copywriting(
         raise RuntimeError(f"Mistral 返回了无法解析的文案结果：{exc}") from exc
 
     if not isinstance(result, dict):
-        raise RuntimeError("Mistral 返回的文案不是 JSON 对象。")
-    title = result.get("title")
-    content = result.get("content")
+        shape = type(result).__name__
+        raise RuntimeError(f"Mistral 返回的文案应为 JSON 对象，实际为 {shape}。请重试。")
+
+    title = _first_text(result, ("title", "标题"))
+    content = _first_text(result, ("content", "正文", "文案", "body", "caption"))
     if not isinstance(title, str) or not isinstance(content, str):
-        raise RuntimeError("Mistral 文案缺少有效的 title 或 content 字段。")
+        returned_fields = ", ".join(str(key) for key in result.keys()) or "无"
+        raise RuntimeError(
+            "Mistral 已返回 JSON，但未提供有效的标题和正文文本。"
+            f"识别到的字段：{returned_fields}。请重试；如持续发生，请检查模型响应格式。"
+        )
     title = title.strip()
     content = content.strip()
     if not title or len(title) > 20:
@@ -78,3 +85,11 @@ def generate_copywriting(
     if not content or len(content) > 1000:
         raise RuntimeError("生成正文为空或超过 1000 个字符，请调整要求后重试。")
     return {"title": title, "content": content}
+
+
+def _first_text(result: dict[str, object], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = result.get(key)
+        if isinstance(value, str):
+            return value
+    return None

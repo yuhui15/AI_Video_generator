@@ -227,6 +227,7 @@ PAGE = r"""<!doctype html>
           <textarea id="publisher-prompt" maxlength="2000" placeholder="补充语气、重点或内容结构要求"></textarea>
         </div>
         <button type="button" class="submit" id="prepare-publisher">随机抽图并生成文案</button>
+        <p id="publisher-state" role="status" aria-live="polite">先选择素材文件夹，再生成草稿。</p>
       </section>
       <section class="panel" id="publisher-preview-panel" hidden>
         <h2>发布预览</h2>
@@ -245,7 +246,6 @@ PAGE = r"""<!doctype html>
           <button type="button" class="submit" id="open-publisher">打开小红书编辑页并填入草稿</button>
           <button type="button" class="item-action" id="close-publisher" hidden>关闭发布浏览器</button>
         </div>
-        <p id="publisher-state" role="status" aria-live="polite"></p>
       </section>
     </section>
     <section id="manager-page" hidden>
