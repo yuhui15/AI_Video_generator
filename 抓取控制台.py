@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from xiaohongshu_publisher.copywriter import generate_copywriting
+from xiaohongshu_publisher.image_loader import build_post_images
+from xiaohongshu_publisher.publisher import open_filled_draft
+
 
 ROOT = Path(__file__).resolve().parent
 SCRAPER = ROOT / "自动抓取脚本.py"
@@ -34,6 +38,7 @@ PROTECTED_DIRS = {
     ".vscode",
     ".idea",
     "node_modules",
+    "xiaohongshu_publisher",
 }
 job_lock = threading.Lock()
 job: dict[str, Any] = {
@@ -43,6 +48,10 @@ job: dict[str, Any] = {
     "error": None,
 }
 mistral_api_key: str | None = None
+publisher_lock = threading.Lock()
+publisher_state: dict[str, str] = {"status": "idle", "message": ""}
+publisher_draft: dict[str, Any] | None = None
+publisher_driver: Any = None
 
 
 def load_metric_names() -> list[str]:
@@ -95,6 +104,8 @@ PAGE = r"""<!doctype html>
     .mode label:has(input:checked) { border-color:#1d5c83; background:#edf4f8; color:#174d6e; }
     input,select,button { font:inherit; color:var(--text); }
     input[type="text"],input[type="number"] { width:100%; padding:11px 12px; border:1px solid #cfd4d8; border-radius:2px; background:#fff; }
+    select,textarea { width:100%; padding:11px 12px; border:1px solid #cfd4d8; border-radius:2px; background:#fff; font:inherit; }
+    textarea { min-height:100px; resize:vertical; }
     input::placeholder { color:#92999f; }
     input:focus,button:focus-visible { outline:2px solid #78a9c5; outline-offset:2px; }
     .field { margin:20px 0 8px; }
@@ -152,6 +163,12 @@ PAGE = r"""<!doctype html>
     #preview-image { display:block; max-width:100%; max-height:calc(90vh - 90px); margin:0 auto; object-fit:contain; }
     .preview-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     #preview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #publisher-images { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; margin:16px 0; }
+    .publisher-image { min-width:0; padding:7px; border:1px solid #d9dddf; background:#fafbfb; }
+    .publisher-image img { width:100%; height:120px; object-fit:cover; }
+    .publisher-image span { display:block; overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    #publisher-state { min-height:24px; color:#245b7c; font-weight:650; }
+    .publisher-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
     [hidden] { display:none!important; }
     @media(max-width:700px) { .topbar { padding:0 18px; } main { padding:42px 18px 56px; } .hero { grid-template-columns:1fr; gap:12px; padding-bottom:28px; } .hero-copy { max-width:none; } .grid { grid-template-columns:1fr; gap:0; } .panel { padding:20px 18px; } .brand { gap:8px; } .brand img { width:42px; height:39px; } }
     @media(max-width:560px) { .token-controls { grid-template-columns:1fr 1fr; } .token-controls input { grid-column:1/-1; } }
@@ -181,7 +198,56 @@ PAGE = r"""<!doctype html>
     <nav class="nav-actions" aria-label="页面">
       <button type="button" id="show-crawler" aria-current="page">抓取控制台</button>
       <button type="button" id="show-manager">图片管理</button>
+      <button type="button" id="show-publisher">小红书发布</button>
     </nav>
+    <section id="publisher-page" hidden>
+      <section class="panel">
+        <h2>小红书图文准备与发布</h2>
+        <p>从本地图片目录抽取素材，用 Ministral 14B 生成文案并预览；图片最后自动附加彦祖美学推广图。</p>
+        <div class="warning">生成的草稿不会自动公开发布。打开创作者平台后，请检查图片、标题和正文，并由你手动点击小红书页面上的“发布”。请确保你有权使用所选图片。</div>
+        <div class="field">
+          <label for="publisher-mode">内容类别</label>
+          <select id="publisher-mode">
+            <option value="comparison">63 项美学指标：High / Low 对比</option>
+            <option value="topic">话题文件夹：自定义文案</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="publisher-folder">素材文件夹</label>
+          <select id="publisher-folder"></select>
+          <p class="help" id="publisher-folder-help"></p>
+        </div>
+        <div class="field">
+          <label for="publisher-count">抽取数量</label>
+          <input id="publisher-count" type="number" min="1" max="8" value="3">
+          <p class="help" id="publisher-count-help">High 和 Low 各抽取此数量；推广图不计入数量。</p>
+        </div>
+        <div class="field">
+          <label for="publisher-prompt">创作者补充 Prompt</label>
+          <textarea id="publisher-prompt" maxlength="2000" placeholder="补充语气、重点或内容结构要求"></textarea>
+        </div>
+        <button type="button" class="submit" id="prepare-publisher">随机抽图并生成文案</button>
+      </section>
+      <section class="panel" id="publisher-preview-panel" hidden>
+        <h2>发布预览</h2>
+        <p id="publisher-image-summary"></p>
+        <div id="publisher-images"></div>
+        <div class="field">
+          <label for="publisher-title">标题（最多 20 字）</label>
+          <input id="publisher-title" type="text" maxlength="20">
+        </div>
+        <div class="field">
+          <label for="publisher-content">正文（最多 1000 字）</label>
+          <textarea id="publisher-content" maxlength="1000"></textarea>
+        </div>
+        <div class="publisher-actions">
+          <button type="button" class="item-action" id="regenerate-publisher">重新抽图并生成文案</button>
+          <button type="button" class="submit" id="open-publisher">打开小红书编辑页并填入草稿</button>
+          <button type="button" class="item-action" id="close-publisher" hidden>关闭发布浏览器</button>
+        </div>
+        <p id="publisher-state" role="status" aria-live="polite"></p>
+      </section>
+    </section>
     <section id="manager-page" hidden>
       <section class="panel">
         <h2>图片与文件夹管理</h2>
@@ -292,6 +358,7 @@ const statusElement = document.getElementById("status");
 const logsElement = document.getElementById("logs");
 const crawlerPage = document.getElementById("crawler-page");
 const managerPage = document.getElementById("manager-page");
+const publisherPage = document.getElementById("publisher-page");
 const libraryList = document.getElementById("library-list");
 const libraryStatus = document.getElementById("library-status");
 const libraryBreadcrumb = document.getElementById("library-breadcrumb");
@@ -304,6 +371,7 @@ const metricFilter = document.getElementById("metric-filter");
 const tokenInput = document.getElementById("mistral-api-key");
 const tokenStatus = document.getElementById("token-status");
 let timer = null;
+let publisherTimer = null;
 let rewrittenMetric = null;
 let rewrittenQueries = null;
 
@@ -472,15 +540,29 @@ async function pollStatus() {
 document.getElementById("show-crawler").addEventListener("click", event => {
   crawlerPage.hidden = false;
   managerPage.hidden = true;
+  publisherPage.hidden = true;
   event.currentTarget.setAttribute("aria-current", "page");
   document.getElementById("show-manager").removeAttribute("aria-current");
+  document.getElementById("show-publisher").removeAttribute("aria-current");
 });
 document.getElementById("show-manager").addEventListener("click", event => {
   crawlerPage.hidden = true;
   managerPage.hidden = false;
+  publisherPage.hidden = true;
   event.currentTarget.setAttribute("aria-current", "page");
   document.getElementById("show-crawler").removeAttribute("aria-current");
+  document.getElementById("show-publisher").removeAttribute("aria-current");
   loadLibrary();
+});
+document.getElementById("show-publisher").addEventListener("click", event => {
+  crawlerPage.hidden = true;
+  managerPage.hidden = true;
+  publisherPage.hidden = false;
+  event.currentTarget.setAttribute("aria-current", "page");
+  document.getElementById("show-crawler").removeAttribute("aria-current");
+  document.getElementById("show-manager").removeAttribute("aria-current");
+  loadPublisherFolders();
+  pollPublisherStatus();
 });
 function renderBreadcrumb(path) {
   libraryBreadcrumb.replaceChildren();
@@ -606,6 +688,162 @@ document.getElementById("close-preview").addEventListener("click", () => {
 });
 document.getElementById("preview-delete").addEventListener("click", () => {
   if (previewedImagePath) deleteLibraryItem(previewedImagePath, "image");
+});
+let publisherFolders = [];
+function updatePublisherMode() {
+  const comparison = document.getElementById("publisher-mode").value === "comparison";
+  const countInput = document.getElementById("publisher-count");
+  countInput.max = comparison ? "8" : "17";
+  if (Number(countInput.value) > Number(countInput.max)) countInput.value = countInput.max;
+  document.getElementById("publisher-count-help").textContent = comparison
+    ? "High 和 Low 各抽取此数量；最多 8 张/组。最后会附加推广图。"
+    : "从所选话题文件夹及其普通子目录中抽取；最多 17 张。最后会附加推广图。";
+  renderPublisherFolderOptions();
+}
+function renderPublisherFolderOptions() {
+  const mode = document.getElementById("publisher-mode").value;
+  const select = document.getElementById("publisher-folder");
+  const available = publisherFolders.filter(folder => mode === "comparison"
+    ? folder.is_metric
+    : !folder.is_metric);
+  select.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = available.length ? "请选择文件夹" : "没有可用的文件夹";
+  select.append(placeholder);
+  for (const folder of available) {
+    const option = document.createElement("option");
+    option.value = folder.path;
+    option.textContent = `${folder.name} · ${folder.image_count} 张照片`;
+    select.append(option);
+  }
+  document.getElementById("publisher-folder-help").textContent = mode === "comparison"
+    ? "只显示含 high 和 low 两个图片子文件夹的美学指标。"
+    : "只显示普通话题文件夹；指标文件夹会从此列表中排除。";
+}
+async function loadPublisherFolders() {
+  const select = document.getElementById("publisher-folder");
+  select.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.textContent = "正在读取项目图片文件夹…";
+  select.append(placeholder);
+  try {
+    const response = await fetch("/api/publisher/folders", {cache:"no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取文件夹失败");
+    publisherFolders = data.folders;
+    updatePublisherMode();
+  } catch (error) {
+    document.getElementById("publisher-state").textContent = `读取素材文件夹失败：${error.message}`;
+  }
+}
+function renderPublisherPreview(data) {
+  const panel = document.getElementById("publisher-preview-panel");
+  const imageList = document.getElementById("publisher-images");
+  imageList.replaceChildren();
+  for (let index = 0; index < data.images.length; index += 1) {
+    const image = data.images[index];
+    const card = document.createElement("div");
+    card.className = "publisher-image";
+    const preview = document.createElement("img");
+    preview.src = `/api/publisher/image?index=${index}`;
+    preview.alt = image.name;
+    const label = document.createElement("span");
+    label.textContent = image.name;
+    card.append(preview, label);
+    imageList.append(card);
+  }
+  document.getElementById("publisher-image-summary").textContent =
+    `${data.images.length - 1} 张抽取图片 + 最后一张彦祖美学推广图`;
+  document.getElementById("publisher-title").value = data.copy.title;
+  document.getElementById("publisher-content").value = data.copy.content;
+  document.getElementById("publisher-state").textContent = "文案和图片已准备好。请审核并可编辑后，再打开发布编辑页。";
+  panel.hidden = false;
+}
+async function preparePublisherDraft() {
+  const button = document.getElementById("prepare-publisher");
+  const mode = document.getElementById("publisher-mode").value;
+  const folder = document.getElementById("publisher-folder").value;
+  const count = Number(document.getElementById("publisher-count").value);
+  if (!folder) {
+    document.getElementById("publisher-state").textContent = "请先选择素材文件夹。";
+    return;
+  }
+  button.disabled = true;
+  document.getElementById("publisher-preview-panel").hidden = true;
+  document.getElementById("publisher-state").textContent = "正在随机抽图并请求 Ministral 14B 生成文案…";
+  try {
+    const response = await fetch("/api/publisher/prepare", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        mode,
+        folder,
+        count,
+        prompt:document.getElementById("publisher-prompt").value
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法准备发布草稿");
+    renderPublisherPreview(data);
+  } catch (error) {
+    document.getElementById("publisher-state").textContent = `草稿准备失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+document.getElementById("publisher-mode").addEventListener("change", updatePublisherMode);
+document.getElementById("prepare-publisher").addEventListener("click", preparePublisherDraft);
+document.getElementById("regenerate-publisher").addEventListener("click", preparePublisherDraft);
+document.getElementById("open-publisher").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/publisher/launch", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        title:document.getElementById("publisher-title").value,
+        content:document.getElementById("publisher-content").value
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法打开小红书编辑页");
+    document.getElementById("publisher-state").textContent = data.message;
+    pollPublisherStatus();
+  } catch (error) {
+    document.getElementById("publisher-state").textContent = `打开发布页失败：${error.message}`;
+    button.disabled = false;
+  }
+});
+async function pollPublisherStatus() {
+  try {
+    const response = await fetch("/api/publisher/status", {cache:"no-store"});
+    const data = await response.json();
+    document.getElementById("publisher-state").textContent = data.message;
+    document.getElementById("open-publisher").disabled =
+      data.status === "starting" || data.status === "ready" || data.status === "closing";
+    document.getElementById("close-publisher").hidden = data.status !== "ready";
+    clearTimeout(publisherTimer);
+    if (data.status === "starting") publisherTimer = setTimeout(pollPublisherStatus, 1500);
+  } catch (error) {
+    document.getElementById("publisher-state").textContent = `发布状态读取失败：${error.message}`;
+  }
+}
+document.getElementById("close-publisher").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/publisher/close", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:"{}"
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法关闭浏览器");
+    document.getElementById("publisher-state").textContent = data.message;
+    await pollPublisherStatus();
+  } catch (error) {
+    document.getElementById("publisher-state").textContent = `关闭发布浏览器失败：${error.message}`;
+  }
 });
 form.addEventListener("submit", async event => {
   event.preventDefault();
@@ -816,6 +1054,31 @@ def run_crawler(command: list[str]) -> None:
             job["error"] = str(exc)
 
 
+def run_publisher_browser(
+    image_paths: list[Path],
+    title: str,
+    content: str,
+) -> None:
+    global publisher_driver
+
+    def update_status(message: str) -> None:
+        with publisher_lock:
+            publisher_state.update(status="starting", message=message)
+
+    try:
+        driver = open_filled_draft(image_paths, title, content, update_status)
+    except Exception as exc:
+        with publisher_lock:
+            publisher_state.update(status="error", message=f"打开小红书草稿失败：{exc}")
+        return
+    with publisher_lock:
+        publisher_driver = driver
+        publisher_state.update(
+            status="ready",
+            message="草稿已填入浏览器。请检查图片顺序、标题和正文，并手动点击发布。",
+        )
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LocalImageCrawler/1.0"
 
@@ -858,6 +1121,17 @@ class Handler(BaseHTTPRequestHandler):
             with job_lock:
                 configured = mistral_api_key is not None
             self.send_json({"configured": configured})
+            return
+        if request.path == "/api/publisher/folders":
+            self.list_publisher_folders()
+            return
+        if request.path == "/api/publisher/image":
+            self.send_publisher_image(parse_qs(request.query).get("index", [""])[0])
+            return
+        if request.path == "/api/publisher/status":
+            with publisher_lock:
+                status = dict(publisher_state)
+            self.send_json(status)
             return
         if request.path == "/api/manage/list":
             try:
@@ -914,6 +1188,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/manage/delete":
             self.delete_library_item()
             return
+        if self.path in {"/api/publisher/prepare", "/api/publisher/launch", "/api/publisher/close"}:
+            if not self.is_same_origin_request():
+                self.send_json({"error": "小红书发布请求只允许来自当前本机网页。"}, 403)
+                return
+            if self.path == "/api/publisher/prepare":
+                self.prepare_publisher_draft()
+            elif self.path == "/api/publisher/launch":
+                self.launch_publisher_draft()
+            else:
+                self.close_publisher_browser()
+            return
         if self.path != "/api/start":
             self.send_json({"error": "Not found"}, 404)
             return
@@ -936,6 +1221,217 @@ class Handler(BaseHTTPRequestHandler):
         worker = threading.Thread(target=run_crawler, args=(command,), daemon=True)
         worker.start()
         self.send_json({"status": "starting"}, 202)
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > MAX_REQUEST_BYTES:
+            raise ValueError("请求内容为空或超过大小限制。")
+        payload = json.loads(self.rfile.read(length))
+        if not isinstance(payload, dict):
+            raise ValueError("请求格式错误。")
+        return payload
+
+    def list_publisher_folders(self) -> None:
+        folders: list[dict[str, Any]] = []
+        try:
+            for folder in ROOT.iterdir():
+                if (
+                    not folder.is_dir()
+                    or folder.is_symlink()
+                    or folder.name.lower() in PROTECTED_DIRS
+                ):
+                    continue
+                is_metric = folder.name in METRIC_NAMES
+                if is_metric:
+                    high_dir = folder / "high"
+                    low_dir = folder / "low"
+                    if high_dir.is_symlink() or low_dir.is_symlink():
+                        continue
+                    high_count = count_managed_images(high_dir) if high_dir.is_dir() else 0
+                    low_count = count_managed_images(low_dir) if low_dir.is_dir() else 0
+                    if not high_count or not low_count:
+                        continue
+                    image_count = high_count + low_count
+                else:
+                    image_count = count_managed_images(folder)
+                    if not image_count:
+                        continue
+                folders.append({
+                    "name": folder.name,
+                    "path": folder.name,
+                    "image_count": image_count,
+                    "is_metric": is_metric,
+                })
+        except OSError as exc:
+            self.send_json({"error": f"读取素材文件夹失败：{exc}"}, 500)
+            return
+        self.send_json({"folders": sorted(folders, key=lambda item: item["name"].casefold())})
+
+    def prepare_publisher_draft(self) -> None:
+        global publisher_draft
+        try:
+            payload = self.read_json_body()
+            mode = payload.get("mode")
+            folder = payload.get("folder")
+            count = payload.get("count")
+            prompt = payload.get("prompt", "")
+            if mode not in {"comparison", "topic"}:
+                raise ValueError("请选择有效的发布素材模式。")
+            if not isinstance(folder, str) or not folder.strip() or len(folder) > 500:
+                raise ValueError("请选择有效的素材文件夹。")
+            if isinstance(count, bool) or not isinstance(count, int):
+                raise ValueError("抽取数量必须是整数。")
+            if not isinstance(prompt, str) or len(prompt) > 2000:
+                raise ValueError("创作者 Prompt 不能超过 2000 个字符。")
+            requested_folder = ROOT / folder
+            if requested_folder.is_symlink():
+                raise ValueError("不能使用符号链接作为素材文件夹。")
+            selected_folder = requested_folder.resolve()
+            if (
+                selected_folder.parent != ROOT
+                or selected_folder.is_symlink()
+                or not selected_folder.is_dir()
+                or selected_folder.name.lower() in PROTECTED_DIRS
+            ):
+                raise ValueError("只能选择项目根目录中可访问的素材文件夹。")
+            is_metric = selected_folder.name in METRIC_NAMES
+            if (mode == "comparison") != is_metric:
+                raise ValueError("所选素材文件夹与当前模式不匹配，请重新选择。")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+
+        with publisher_lock:
+            if publisher_state["status"] in {"generating", "starting", "ready", "closing"}:
+                self.send_json({"error": "当前已有小红书草稿或浏览器任务正在处理中。"}, 409)
+                return
+            publisher_draft = None
+            publisher_state.update(status="generating", message="正在抽取素材并生成文案。")
+        with job_lock:
+            api_key = mistral_api_key
+        if not api_key:
+            with publisher_lock:
+                publisher_state.update(status="error", message="请先绑定 Mistral API Key。")
+            self.send_json({"error": "请先在抓取控制台绑定 Mistral API Key。"}, 400)
+            return
+
+        try:
+            images, group_counts = build_post_images(ROOT, mode, folder, count)
+        except ValueError as exc:
+            with publisher_lock:
+                publisher_state.update(status="error", message=str(exc))
+            self.send_json({"error": str(exc)}, 400)
+            return
+        except OSError as exc:
+            with publisher_lock:
+                publisher_state.update(status="error", message=f"素材处理失败：{exc}")
+            self.send_json({"error": f"素材处理失败：{exc}"}, 500)
+            return
+
+        try:
+            copy = generate_copywriting(
+                api_key,
+                mode,
+                selected_folder.name,
+                group_counts,
+                prompt,
+            )
+        except RuntimeError as exc:
+            with publisher_lock:
+                publisher_state.update(status="error", message=str(exc))
+            self.send_json({"error": str(exc)}, 502)
+            return
+
+        with publisher_lock:
+            publisher_draft = {
+                "images": images,
+                "copy": copy,
+                "folder": selected_folder.name,
+                "mode": mode,
+            }
+            publisher_state.update(status="draft", message="草稿已准备好，请先审核图片和文案。")
+        self.send_json({
+            "images": [{"name": path.name} for path in images],
+            "copy": copy,
+        })
+
+    def send_publisher_image(self, raw_index: str) -> None:
+        try:
+            index = int(raw_index)
+        except ValueError:
+            self.send_json({"error": "图片索引无效。"}, 400)
+            return
+        with publisher_lock:
+            draft = publisher_draft
+            if draft is None or not 0 <= index < len(draft["images"]):
+                self.send_json({"error": "预览图片不存在或草稿已失效。"}, 404)
+                return
+            image_path = draft["images"][index]
+        try:
+            if not image_path.is_file() or image_path.is_symlink():
+                raise FileNotFoundError("预览图片不存在。")
+            payload = image_path.read_bytes()
+        except OSError as exc:
+            self.send_json({"error": f"读取预览图片失败：{exc}"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(image_path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def launch_publisher_draft(self) -> None:
+        try:
+            payload = self.read_json_body()
+            title = payload.get("title")
+            content = payload.get("content")
+            if not isinstance(title, str) or not title.strip() or len(title.strip()) > 20:
+                raise ValueError("标题不能为空且不能超过 20 个字符。")
+            if not isinstance(content, str) or not content.strip() or len(content.strip()) > 1000:
+                raise ValueError("正文不能为空且不能超过 1000 个字符。")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        with publisher_lock:
+            if publisher_draft is None:
+                self.send_json({"error": "请先准备并审核一份发布草稿。"}, 409)
+                return
+            if publisher_state["status"] in {"generating", "starting", "ready", "closing"}:
+                self.send_json({"error": "当前小红书草稿已在处理中或已打开。"}, 409)
+                return
+            publisher_draft["copy"] = {"title": title.strip(), "content": content.strip()}
+            image_paths = list(publisher_draft["images"])
+            publisher_state.update(status="starting", message="正在启动小红书创作者编辑页。")
+        worker = threading.Thread(
+            target=run_publisher_browser,
+            args=(image_paths, title.strip(), content.strip()),
+            daemon=True,
+        )
+        worker.start()
+        self.send_json({"status": "starting", "message": "正在打开小红书编辑页；首次使用请在浏览器中登录。"}, 202)
+
+    def close_publisher_browser(self) -> None:
+        global publisher_driver
+        with publisher_lock:
+            if publisher_state["status"] in {"starting", "closing"}:
+                self.send_json({"error": "浏览器正在启动或关闭，请稍后再试。"}, 409)
+                return
+            driver = publisher_driver
+            publisher_driver = None
+            publisher_state.update(status="closing", message="正在关闭发布浏览器。")
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception as exc:
+                with publisher_lock:
+                    publisher_state.update(status="error", message=f"浏览器已退出但清理驱动失败：{exc}")
+                self.send_json({"error": f"浏览器已退出但清理驱动失败：{exc}"}, 500)
+                return
+        with publisher_lock:
+            publisher_state.update(status="draft", message="发布浏览器已关闭；草稿仍保留在本机服务内存中。")
+        self.send_json({"status": "draft", "message": "发布浏览器已关闭；草稿仍保留在本机服务内存中。"})
 
     def rewrite_metric_queries(self) -> None:
         try:
@@ -1147,6 +1643,11 @@ def main() -> None:
         print("\n正在停止网页服务…")
     finally:
         server.server_close()
+        if publisher_driver is not None:
+            try:
+                publisher_driver.quit()
+            except Exception as exc:
+                print(f"关闭小红书浏览器失败：{exc}")
 
 
 if __name__ == "__main__":

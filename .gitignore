@@ -35,6 +35,7 @@ output/
 datasets/
 全套63项美学指标数据集*/
 抓取结果/
+xiaohongshu_publisher/.browser_profile/
 hf_cache/
 transformers_cache/
 *.tmp
