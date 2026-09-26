@@ -42,7 +42,7 @@ def open_filled_draft(
         file_input = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
         )
-        file_input.send_keys("\n".join(str(path.resolve()) for path in image_paths))
+        _upload_images(driver, file_input, image_paths)
         status_callback("图片已上传，正在等待编辑器加载。")
 
         try:
@@ -82,9 +82,25 @@ def open_filled_draft(
         return driver
     except PublisherEditorNotFound:
         raise
-    except Exception:
-        driver.quit()
+    except Exception as exc:
+        try:
+            driver.quit()
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                f"草稿准备失败：{exc}；同时关闭 Chrome 失败：{cleanup_error}"
+            ) from exc
         raise
+
+
+def _upload_images(driver: uc.Chrome, file_input, image_paths: list[Path]) -> None:
+    if not image_paths:
+        raise ValueError("没有可上传的图片。")
+    if len(image_paths) > 1 and file_input.get_attribute("multiple") is None:
+        driver.execute_script(
+            "arguments[0].multiple = true; arguments[0].setAttribute('multiple', '');",
+            file_input,
+        )
+    file_input.send_keys("\n".join(str(path.resolve()) for path in image_paths))
 
 
 def _first_visible(driver, locators):
