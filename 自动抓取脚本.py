@@ -91,11 +91,9 @@ def check_image_matches_metric(image_path, prob_threshold=0.5):
         inputs = clip_processor(text=texts, images=image, return_tensors="pt", padding=True)
         with torch.no_grad():
             outputs = clip_model(**inputs)
-            logits_per_image = outputs.logits_per_image / 100.0
-            probs = logits_per_image.softmax(dim=-1)
+            probs = outputs.logits_per_image.softmax(dim=-1)
         pos_prob = probs[0][0].item()
-        neg_prob = probs[0][1].item()
-        return pos_prob >= prob_threshold and neg_prob < (1.0 - prob_threshold)
+        return pos_prob >= prob_threshold
     except Exception as exc:
         raise RuntimeError(f"CLIP 图片筛选失败：{exc}") from exc
 

@@ -1,0 +1,8 @@
+requests>=2.31,<3
+undetected-chromedriver>=3.5,<4
+selenium>=4.10,<5
+opencv-python>=4.8,<5
+numpy>=1.26,<3
+Pillow>=10,<12
+torch>=2.5,<3
+transformers>=4.45,<5
