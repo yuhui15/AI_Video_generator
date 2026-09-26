@@ -45,18 +45,27 @@ def open_filled_draft(
         status_callback("正在打开小红书创作者平台；如未登录，请在浏览器中完成登录。")
         driver.get(CREATOR_URL)
         wait = WebDriverWait(driver, 180)
-        status_callback("正在切换到小红书图片上传模式。")
+        status_callback("正在切换到小红书“上传图文”模式。")
         try:
-            WebDriverWait(driver, 45).until(_click_image_tab)
+            WebDriverWait(driver, 45).until(_click_upload_image_mode)
+            status_callback("已进入“上传图文”，正在切换到“图片”标签。")
+            WebDriverWait(driver, 30).until(_click_image_tab)
         except TimeoutException as exc:
             raise PublisherManualIntervention(
                 driver,
-                "未找到小红书的“图片”标签页。请在打开的浏览器中先进入图文发布，并切换到“图片”标签后再重试。浏览器会保持打开。",
+                _describe_missing_upload_tab(driver),
             ) from exc
 
-        file_input = wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
-        )
+        try:
+            file_input = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
+            )
+        except TimeoutException as exc:
+            raise PublisherManualIntervention(
+                driver,
+                "已切换到“上传图文”的“图片”标签，但页面没有显示图片选择控件。"
+                "请检查登录状态或页面提示；浏览器会保持打开。",
+            ) from exc
         _upload_images(driver, file_input, image_paths)
         status_callback("图片已上传，正在等待编辑器加载。")
 
@@ -121,15 +130,28 @@ def _upload_images(driver: uc.Chrome, file_input, image_paths: list[Path]) -> No
 
 
 def _click_image_tab(driver: uc.Chrome) -> bool:
+    return _click_exact_tab(driver, "图片")
+
+
+def _click_upload_image_mode(driver: uc.Chrome) -> bool:
+    for label in ("上传图文", "发布图文"):
+        if _click_exact_tab(driver, label):
+            return True
+    return False
+
+
+def _click_exact_tab(driver: uc.Chrome, label: str) -> bool:
     selectors = (
-        (By.XPATH, "//*[@role='tab' and normalize-space(.)='图片']"),
-        (By.XPATH, "//button[normalize-space(.)='图片']"),
+        (By.XPATH, f"//*[@role='tab' and normalize-space(.)='{label}']"),
+        (By.XPATH, f"//button[normalize-space(.)='{label}']"),
+        (By.XPATH, f"//a[normalize-space(.)='{label}']"),
         (
             By.XPATH,
             "//*[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'tab') "
-            "and normalize-space(.)='图片']",
+            f"and normalize-space(.)='{label}']",
         ),
-        (By.XPATH, "//*[@aria-label='图片' or @title='图片']"),
+        (By.XPATH, f"//*[normalize-space(text())='{label}']"),
+        (By.XPATH, f"//*[@aria-label='{label}' or @title='{label}']"),
     )
     for by, selector in selectors:
         for element in driver.find_elements(by, selector):
@@ -137,6 +159,25 @@ def _click_image_tab(driver: uc.Chrome) -> bool:
                 element.click()
                 return True
     return False
+
+
+def _describe_missing_upload_tab(driver: uc.Chrome) -> str:
+    try:
+        page_url = driver.current_url
+        page_title = driver.title
+        visible_text = " ".join(
+            element.text.strip()
+            for element in driver.find_elements(By.CSS_SELECTOR, "button,[role='tab'],a")
+            if element.is_displayed() and element.text.strip()
+        )
+    except Exception as exc:
+        return f"无法切换到图文图片上传模式，且读取页面状态失败：{exc}"
+    return (
+        "自动切换失败：没有找到“上传图文”或“图片”标签。"
+        f"当前页面：{page_url}（{page_title}）；可见标签：{visible_text[:500] or '无'}。"
+        "请确认已登录；也可以在打开的浏览器中手动点“上传图文”，再点“图片”。"
+        "浏览器会保持打开，不会自动发布。"
+    )
 
 
 def _first_visible(driver, locators):
