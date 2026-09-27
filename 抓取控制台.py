@@ -181,9 +181,9 @@ PAGE = r"""<!doctype html>
 <body>
 <nav class="topbar" aria-label="品牌">
   <div class="topbar-inner">
-    <a class="brand" href="https://www.yanzumeixue.com/" target="_blank" rel="noopener noreferrer" aria-label="彦祖美学官网">
-      <img src="https://www.yanzumeixue.com/images/yanzu-meixue.svg" alt="彦祖美学 Logo">
-      <span>彦祖美学</span>
+    <a class="brand" href="https://www.yanzumeixue.com/" target="_blank" rel="noopener noreferrer" aria-label="颜祖美学官网">
+      <img src="https://www.yanzumeixue.com/images/yanzu-meixue.svg" alt="颜祖美学 Logo">
+      <span>颜祖美学</span>
     </a>
   </div>
 </nav>
@@ -207,7 +207,7 @@ PAGE = r"""<!doctype html>
     <section id="publisher-page" hidden>
       <section class="panel">
         <h2>小红书图文准备与发布</h2>
-        <p>从本地图片目录抽取素材，用 Ministral 14B 生成文案并预览；图片最后自动附加彦祖美学推广图。</p>
+        <p>从本地图片目录抽取素材，用 Ministral 14B 生成文案并预览；图片最后自动附加颜祖美学推广图。</p>
         <div class="warning">生成的草稿不会自动公开发布。打开创作者平台后，请检查图片、标题和正文，并由你手动点击小红书页面上的“发布”。请确保你有权使用所选图片。</div>
         <div class="field">
           <label for="publisher-mode">内容类别</label>
@@ -826,7 +826,7 @@ async function pollPublisherStatus() {
     const data = await response.json();
     document.getElementById("publisher-state").textContent = data.message;
     document.getElementById("open-publisher").disabled =
-      data.status === "starting" || data.status === "ready" || data.status === "closing";
+      data.status === "starting" || data.status === "closing";
     document.getElementById("close-publisher").hidden = data.status !== "ready";
     clearTimeout(publisherTimer);
     if (data.status === "starting") publisherTimer = setTimeout(pollPublisherStatus, 1500);
@@ -1316,8 +1316,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         with publisher_lock:
-            if publisher_state["status"] in {"generating", "starting", "ready", "closing"}:
-                self.send_json({"error": "当前已有小红书草稿或浏览器任务正在处理中。"}, 409)
+            # 修改处：去掉了对 ready 等状态的拦截，只在当前正在生成（generating）时防止并发冲突
+            if publisher_state["status"] == "generating":
+                self.send_json({"error": "当前正在生成草稿，请稍候。"}, 409)
                 return
             publisher_draft = None
             publisher_state.update(status="generating", message="正在抽取素材并生成文案。")
@@ -1397,6 +1398,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def launch_publisher_draft(self) -> None:
+        global publisher_driver
         try:
             payload = self.read_json_body()
             title = payload.get("title")
@@ -1412,8 +1414,8 @@ class Handler(BaseHTTPRequestHandler):
             if publisher_draft is None:
                 self.send_json({"error": "请先准备并审核一份发布草稿。"}, 409)
                 return
-            if publisher_state["status"] in {"generating", "starting", "ready", "closing"}:
-                self.send_json({"error": "当前小红书草稿已在处理中或已打开。"}, 409)
+            if publisher_state["status"] in {"generating", "starting", "closing"}:
+                self.send_json({"error": "当前小红书草稿正在处理中。"}, 409)
                 return
             publisher_draft["copy"] = {"title": title.strip(), "content": content.strip()}
             image_paths = list(publisher_draft["images"])

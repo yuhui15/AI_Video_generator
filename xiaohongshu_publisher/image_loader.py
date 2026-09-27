@@ -46,40 +46,52 @@ def ensure_promo_image() -> Path:
 
     PROMO_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
     width, height = 1080, 1440
-    image = Image.new("RGB", (width, height), "#f8fafc")
+    # 采用高雅的现代AI科技感深色渐变背景，贴合 yanzumeixue.com 品牌定位
+    image = Image.new("RGB", (width, height), "#0f172a")
     draw = ImageDraw.Draw(image)
     
-    # 极简现代网页风格微渐变背景
     for y in range(height):
         ratio = y / max(height - 1, 1)
         color = (
-            int(248 - 12 * ratio),
-            int(250 - 12 * ratio),
-            int(252 - 8 * ratio),
+            int(15 + 10 * ratio),
+            int(23 + 15 * ratio),
+            int(42 + 20 * ratio),
         )
         draw.line((0, y, width, y), fill=color)
 
-    # 模仿 yanzumeixue.com 的现代卡片 UI 容器
-    draw.rounded_rectangle((80, 100, 1000, 1340), radius=32, fill="#ffffff", outline="#e2e8f0", width=2)
+    # 绘制高雅的现代数据科技感卡片 UI 容器
+    draw.rounded_rectangle((70, 80, 1010, 1360), radius=28, fill="#1e293b", outline="#334155", width=2)
     
-    # 顶部品牌 Tag
-    draw.rounded_rectangle((140, 180, 320, 240), radius=20, fill="#eff6ff")
-    draw.text((170, 195), "颜祖美学", font=_font(24, bold=True), fill="#2563eb")
+    # 顶部品牌 Tag：“颜祖美学 · 颜问”
+    draw.rounded_rectangle((130, 150, 380, 215), radius=16, fill="#3b82f6")
+    draw.text((155, 168), "颜祖美学 · 颜问", font=_font(22, bold=True), fill="#ffffff")
 
-    # 核心大标题（修正了“颜祖美学”错别字）
-    draw.text((140, 320), "想知道自己颜值", font=_font(64, bold=True), fill="#0f172a")
-    draw.text((140, 410), "是什么水平吗？", font=_font(64, bold=True), fill="#0f172a")
+    # 核心大标题
+    draw.text((130, 280), "想知道自己颜值", font=_font(60, bold=True), fill="#f8fafc")
+    draw.text((130, 360), "是什么水平吗？", font=_font(60, bold=True), fill="#38bdf8")
 
-    # 说明小字
-    draw.text((140, 530), "基于多维面部指标与智能算法分析", font=_font(28), fill="#64748b")
-    draw.text((140, 580), "探索属于你的美学数据与风格定位", font=_font(28), fill="#64748b")
+    # 平台定位与核心指标说明（严格对应官方网站特性）
+    draw.text((130, 470), "AI 驱动的专业颜值评测与量化分析平台", font=_font(26, bold=True), fill="#94a3b8")
+    
+    # 核心四大支柱与指标展示小卡片区
+    features = [
+        ("100+ 硬核维度", "多维面部指标解码分析"),
+        ("四大支柱体系", "结构、和谐度、轮廓、二态性"),
+    ]
+    card_y = 550
+    for title_txt, desc_txt in features:
+        draw.rounded_rectangle((130, card_y, 950, card_y + 90), radius=12, fill="#0f172a", outline="#475569", width=1)
+        draw.text((160, card_y + 18), title_txt, font=_font(24, bold=True), fill="#38bdf8")
+        draw.text((160, card_y + 52), desc_txt, font=_font(20), fill="#94a3b8")
+        card_y += 110
 
-    # 模仿网站 UI 的高亮操作按钮
-    draw.rounded_rectangle((140, 750, 940, 910), radius=20, fill="#2563eb")
-    draw.text((215, 805), "立即体验 yanzumeixue.com", font=_font(36, bold=True), fill="#ffffff")
+    # 网站引导高亮按钮
+    draw.rounded_rectangle((130, 930, 950, 1060), radius=18, fill="#2563eb")
+    draw.text((220, 972), "立即体验 yanzumeixue.com", font=_font(34, bold=True), fill="#ffffff")
 
-    # 底部提示
-    draw.text((140, 1100), "访问网站，解锁完整面部指标分析报告", font=_font(24), fill="#94a3b8")
+    # 底部说明
+    draw.text((130, 1160), "客观评测 · 专属形象顾问 · 科学重塑形象", font=_font(22), fill="#64748b")
+    draw.text((130, 1200), "访问网站解锁你的个性化提升方案", font=_font(22), fill="#64748b")
 
     image.save(PROMO_IMAGE_PATH, format="PNG", optimize=True)
     return PROMO_IMAGE_PATH

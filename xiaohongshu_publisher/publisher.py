@@ -88,7 +88,7 @@ def open_filled_draft(
                 arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             """, title_input, title)
 
-            # 2. 填写正文
+            # 2. 填写正文（将 \n 转换成 <br> 标签，解决富文本不分行的问题）
             editor = wait.until(
                 lambda browser: _first_visible(
                     browser,
@@ -102,7 +102,9 @@ def open_filled_draft(
             )
             driver.execute_script("""
                 arguments[0].focus();
-                arguments[0].innerText = arguments[1];
+                const text = arguments[1];
+                // 将换行符转为 HTML 分行标签，完美适配富文本编辑器
+                arguments[0].innerHTML = text.split('\\n').join('<br>');
                 arguments[0].dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
                 arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             """, editor, content)
@@ -133,8 +135,6 @@ def _upload_images(driver: uc.Chrome, file_input, image_paths: list[Path]) -> No
     if not resolved_paths:
         raise ValueError("找不到任何有效的图片文件用于上传。")
 
-    # 核心修复：通过 JS 强制解除文件输入框的隐藏状态，并直接注入路径，
-    # 这样可以彻底避免点击任何按钮去触发 Windows 系统自带的“浏览本地文件”弹窗。
     driver.execute_script("""
         arguments[0].style.display = 'block';
         arguments[0].style.visibility = 'visible';

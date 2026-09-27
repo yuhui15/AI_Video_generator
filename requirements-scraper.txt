@@ -1,3 +1,4 @@
+flask>=3.0,<4
 requests>=2.31,<3
 undetected-chromedriver>=3.5,<4
 selenium>=4.10,<5
