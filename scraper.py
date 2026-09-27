@@ -199,6 +199,10 @@ def crawl_all_63_metrics_bing_clip(
     if not os.path.exists(base_save_dir):
         os.makedirs(base_save_dir)
 
+    # 【优化 1】在开始所有抓取之前，显式预加载一次 CLIP 模型，避免运行时卡顿
+    print("🔄 正在初始化并预加载 CLIP 模型，请稍候...")
+    load_clip_model()
+
     options = uc.ChromeOptions()
     try:
         driver = uc.Chrome(options=options, version_main=153)
@@ -248,7 +252,6 @@ def crawl_all_63_metrics_bing_clip(
 
                 img_urls = set()
                 try:
-                    # 通过 Selenium 精准获取 Bing 图片卡片原图链接
                     thumb_elements = driver.find_elements(By.CSS_SELECTOR, "a.iusc")
                     for elem in thumb_elements:
                         m_attr = elem.get_attribute("m")
@@ -268,8 +271,12 @@ def crawl_all_63_metrics_bing_clip(
                 old_success_count = success_count
 
                 for url in final_urls:
-                    if success_count >= target_count_per_category:
+                    # 【优化 2】实时盘点文件夹内的真实图片数量，一旦达标立刻强行中断，防止超额下载
+                    current_saved = [f for f in os.listdir(level_dir) if f.endswith(('.jpg', '.png', '.jpeg', '.webp'))]
+                    if len(current_saved) >= target_count_per_category:
+                        success_count = len(current_saved)
                         break
+
                     try:
                         res = requests.get(url, headers=headers, timeout=8)
                         if res.status_code == 200 and len(res.content) > 18000:
@@ -283,9 +290,7 @@ def crawl_all_63_metrics_bing_clip(
                             with open(temp_filename, 'wb') as f:
                                 f.write(res.content)
 
-                            # 1. 基础尺寸与读取校验
                             if is_valid_face_image(temp_filename):
-                                # 2. 高精度 CLIP 校验（真人、单人、眼睛未被遮挡）
                                 if check_image_matches_metric(temp_filename, clip_threshold):
                                     success_count += 1
                                     final_filename = os.path.join(
