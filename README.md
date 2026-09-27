@@ -17,7 +17,7 @@
 - 已安装 Google Chrome
 - 可访问 Hugging Face、Bing 图片搜索和图片来源网站的网络连接
 - 磁盘空间：Python、PyTorch 和 Transformers 依赖占用较大；首次运行还会下载 CLIP 模型
-
+（安装python的时候注意选择 cutomize installation，然后把 optional features 和 advanced options 的所有选项全部勾选，然后点击install进行安装）
 ---
 
 ## 🚀 一键安装与启动
