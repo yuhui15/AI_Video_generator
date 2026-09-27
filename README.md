@@ -13,7 +13,7 @@
 ## 系统要求
 
 - Windows 10/11
-- Python 3.10 或更新版本（建议 Python 3.11，需勾选“Add Python to PATH”）(已经提供文件夹在根目录里面)
+- Python 3.10 或更新版本（建议 Python 3.11，需勾选“Add Python to PATH”）(已经提供安装包, 在根目录里面)
 - 已安装 Google Chrome
 - 可访问 Hugging Face、Bing 图片搜索和图片来源网站的网络连接
 - 磁盘空间：Python、PyTorch 和 Transformers 依赖占用较大；首次运行还会下载 CLIP 模型
