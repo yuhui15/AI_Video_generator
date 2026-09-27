@@ -8,15 +8,15 @@
 - 调整 CLIP 筛选阈值、每个级别目标图片数和输出目录；
 - 查看抓取任务状态和实时日志。
 
-网页服务只绑定到本机 127.0.0.1，不对局域网或公网开放。Ministral 14B 通过 Mistral API 远程调用，不会下载模型权重到本机。CLIP 模型在首次筛选图片时会从 Hugging Face 下载并在本机运行。
+网页服务只绑定到本机 127.0.0.1，不对局域网或公网开放。Ministral 14B 通过 Mistral API 远程调用，不会下载模型权重到本机。CLIP 模型在首次运行 `start.bat` 时会自动通过国内高速的 ModelScope（魔搭社区）下载到项目本地的 `./models/` 目录中，支持完全离线加载运行。
 
 ## 系统要求
 
 - Windows 10/11
 - Python 3.10 或更新版本（建议 Python 3.11，需勾选“Add Python to PATH”）（（1）已经提供安装包, 在根目录里面 （2）安装 python 的时候注意选择 cutomize installation，然后把 optional features 和 advanced options 的所有选项全部勾选，然后点击 install 进行安装）
 - 已安装 Google Chrome
-- 可访问 Hugging Face、Bing 图片搜索和图片来源网站的网络连接
-- 磁盘空间：Python、PyTorch 和 Transformers 依赖占用较大；首次运行还会下载 CLIP 模型
+- 可访问 Bing 图片搜索和图片来源网站的网络连接（CLIP 模型通过 ModelScope 国内高速通道自动预下载）
+- 磁盘空间：Python、PyTorch 和 Transformers 依赖占用较大；首次运行会自动通过 ModelScope 下载 CLIP 模型并保存在本地 `models/` 目录下
 ---
 
 ## 🚀 一键安装与启动
@@ -24,7 +24,7 @@
 本项目已内置自动化批处理脚本，**无需手动在命令行敲命令安装依赖**。
 
 ### 1. 首次启动与自动安装
-在项目根目录下，直接**双击运行 `一键启动.bat`**：
+在项目根目录下，直接**双击运行 `start.bat`**：
 - 脚本会自动检测并创建 Python 虚拟环境 (`.venv`)。
 - 自动升级 `pip` 并一键安装 `requirements-scraper.txt` 中的所有依赖包。
 - 自动启动网页控制台服务。
@@ -35,7 +35,7 @@
 
 ### 3. 关闭服务
 - **网页运行期间请保持启动脚本的黑窗口开启**。
-- 如果需要停止服务，只需**双击运行 `停止服务.bat`**，即可自动释放端口并安全关闭网页服务器。
+- 如果需要停止服务，只需**双击运行 `stop.bat`**，即可自动释放端口并安全关闭网页服务器。
 
 > **提示**：不要将 Mistral API Key 写入 Python 文件、README 或提交到 Git。
 
@@ -93,7 +93,7 @@
 网页中的“图片保存根目录”就是分类文件夹的父目录。默认值是项目根目录本身；填写相对路径时也以项目目录为基准。图片会按以下结构保存:
 
 ```text
-AI_Video_generator/
+Centre_for_distribution/
 └── <指标或话题>/
     ├── high/
     └── low/
