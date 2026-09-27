@@ -10,6 +10,7 @@ venv/
 env/
 ENV/
 pip-wheel-metadata/
+models/
 
 # Local credentials and editor/OS files
 .env
