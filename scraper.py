@@ -34,7 +34,10 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
+# 智能路径检测：优先使用项目本地 models 目录下的 CLIP 模型，若不存在则回退至远程仓库
+_local_clip_path = os.path.join(os.path.dirname(__file__), "models", "clip-vit-large-patch14")
+CLIP_MODEL_NAME = _local_clip_path if os.path.exists(_local_clip_path) else "openai/clip-vit-large-patch14"
+
 MISTRAL_MODEL_NAME = "ministral-14b-2512"
 clip_model = None
 clip_processor = None
@@ -56,7 +59,7 @@ def load_clip_model():
             "CLIP 图片筛选依赖缺失；请安装 torch、Pillow 和 transformers。"
         ) from exc
 
-    print(f"🔄 正在加载 CLIP 模型 ({CLIP_MODEL_NAME})...")
+    print(f"🔄 正在加载 CLIP 模型（路径/模型名: {CLIP_MODEL_NAME}）...")
     clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
     clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
     clip_model.eval()
@@ -187,6 +190,7 @@ def check_image_matches_metric(image_path, prob_threshold=0.5):
     except Exception as exc:
         raise RuntimeError(f"CLIP 图片筛选失败：{exc}") from exc
 
+
 def crawl_all_63_metrics_bing_clip(
     metrics_dict,
     target_count_per_category=20,
@@ -199,7 +203,6 @@ def crawl_all_63_metrics_bing_clip(
     if not os.path.exists(base_save_dir):
         os.makedirs(base_save_dir)
 
-    # 【优化 1】在开始所有抓取之前，显式预加载一次 CLIP 模型，避免运行时卡顿
     print("🔄 正在初始化并预加载 CLIP 模型，请稍候...")
     load_clip_model()
 
@@ -271,7 +274,6 @@ def crawl_all_63_metrics_bing_clip(
                 old_success_count = success_count
 
                 for url in final_urls:
-                    # 【优化 2】实时盘点文件夹内的真实图片数量，一旦达标立刻强行中断，防止超额下载
                     current_saved = [f for f in os.listdir(level_dir) if f.endswith(('.jpg', '.png', '.jpeg', '.webp'))]
                     if len(current_saved) >= target_count_per_category:
                         success_count = len(current_saved)
@@ -319,6 +321,7 @@ def crawl_all_63_metrics_bing_clip(
 
     driver.quit()
     print(f"\n🎉 全部 63 个美学指标数据集采集流程圆满结束！\n📁 有效数据集保存在: {base_save_dir}")
+
 
 if __name__ == "__main__":
     comprehensive_63_metrics = {
