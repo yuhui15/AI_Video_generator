@@ -1,48 +1,67 @@
 @echo off
-chcp 65001 >nul
+title AI Video Generator Launcher
+cd /d "%~dp0"
 
 echo ========================================================
-echo         AI Video Generator - Environment Setup
+echo         AI Video Generator - 启动器
 echo ========================================================
 echo.
 
-if not exist ".venv" (
-    echo [INFO] Creating Python virtual environment (.venv)...
-    py -3.11 -m venv .venv || python -m venv .venv
+:: 检查系统中是否存在 python
+python --version >nul 2>&1
+if errorlevel 1 (
+    py --version >nul 2>&1
     if errorlevel 1 (
-        echo [ERROR] Failed to create virtual environment! Please ensure Python 3.10+ is installed.
+        echo [错误] 未检测到 Python！请确保已安装 Python 并勾选了 Add to PATH。
         goto error_exit
     )
-    echo [SUCCESS] Virtual environment created.
+)
+
+:: 检查并创建虚拟环境
+if not exist ".venv" (
+    echo [信息] 正在创建 Python 虚拟环境 (.venv)...
+    py -3.11 -m venv .venv || python -m venv .venv
+    if errorlevel 1 (
+        echo [错误] 创建虚拟环境失败！
+        goto error_exit
+    )
+    echo [成功] 虚拟环境创建完成。
     echo.
 )
 
-echo [INFO] Installing and upgrading dependencies...
-.\.venv\Scripts\python.exe -m pip install --upgrade pip >nul 2>&1
-
+:: 安装依赖
+echo [信息] 正在检查并安装依赖包...
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 if exist "requirements-scraper.txt" (
     .\.venv\Scripts\python.exe -m pip install -r requirements-scraper.txt
     if errorlevel 1 (
-        echo [WARNING] Some dependencies might have failed to install. Please check network.
+        echo [警告] 部分依赖安装失败，请检查网络连接。
     )
-) else (
-    echo [NOTICE] requirements-scraper.txt not found, skipping.
 )
 echo.
 
+:: 启动网页控制台
 echo ========================================================
-echo [INFO] Starting web console...
-echo [INFO] Open in your browser: http://127.0.0.1:8765
-echo [INFO] Keep this window open. Press Ctrl+C to stop.
+echo [信息] 正在启动网页控制台...
+echo [提示] 浏览器访问地址: http://127.0.0.1:8765
 echo ========================================================
 echo.
 
 .\.venv\Scripts\python.exe .\抓取控制台.py
 
+if errorlevel 1 (
+    echo.
+    echo [错误] 抓取控制台异常退出。
+    goto error_exit
+)
+
 goto end
 
 :error_exit
 echo.
-echo [ERROR] Startup failed. Please check environment.
+echo ========================================================
+echo 启动失败！请把上面红字或报错信息截图发给我排查。
+echo ========================================================
+
 :end
 pause
