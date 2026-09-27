@@ -88,7 +88,7 @@ def open_filled_draft(
                 arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             """, title_input, title)
 
-            # 2. 填写正文（将 \n 转换成 <br> 标签，解决富文本不分行的问题）
+            # 2. 填写正文（分行与段落完美保留）
             editor = wait.until(
                 lambda browser: _first_visible(
                     browser,
@@ -103,9 +103,19 @@ def open_filled_draft(
             driver.execute_script("""
                 arguments[0].focus();
                 const text = arguments[1];
-                // 将换行符转为 HTML 分行标签，完美适配富文本编辑器
-                arguments[0].innerHTML = text.split('\\n').join('<br>');
-                arguments[0].dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+                const paragraphs = text.split('\\n');
+                const htmlContent = paragraphs.map(p => `<p>${p === '' ? '<br>' : p}</p>`).join('');
+                arguments[0].innerHTML = htmlContent;
+                
+                const dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                const pasteEvent = new ClipboardEvent('paste', {
+                    clipboardData: dt,
+                    bubbles: true,
+                    cancelable: true
+                });
+                arguments[0].dispatchEvent(pasteEvent);
+                arguments[0].dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertParagraph' }));
                 arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             """, editor, content)
             
