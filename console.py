@@ -51,7 +51,7 @@ job: dict[str, Any] = {
     "returncode": None,
     "error": None,
 }
-mistral_api_key: str | None = "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"
+mistral_api_key: str | None = None
 publisher_lock = threading.Lock()
 publisher_state: dict[str, str] = {"status": "idle", "message": ""}
 publisher_draft: dict[str, Any] | None = None
