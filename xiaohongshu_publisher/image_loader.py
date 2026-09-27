@@ -32,7 +32,7 @@ def _image_files(folder: Path, recursive: bool = False) -> list[Path]:
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    font_names = ("msyhbd.ttc", "simhei.ttf", "arialbd.ttf") if bold else ("msyh.ttc", "simsun.ttc", "arial.ttf")
+    font_names = ("msyhbd.ttc", "simhei.ttf", "arialbd.ttf") if bold else ("msyh.ttc", "simsun.ttf", "arial.ttf")
     for font_name in font_names:
         font_path = Path("C:/Windows/Fonts") / font_name
         if font_path.is_file():
@@ -46,26 +46,41 @@ def ensure_promo_image() -> Path:
 
     PROMO_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
     width, height = 1080, 1440
-    image = Image.new("RGB", (width, height), "#111923")
+    image = Image.new("RGB", (width, height), "#f8fafc")
     draw = ImageDraw.Draw(image)
+    
+    # 极简现代网页风格微渐变背景
     for y in range(height):
         ratio = y / max(height - 1, 1)
         color = (
-            int(23 + 29 * ratio),
-            int(36 + 27 * ratio),
-            int(50 + 20 * ratio),
+            int(248 - 12 * ratio),
+            int(250 - 12 * ratio),
+            int(252 - 8 * ratio),
         )
         draw.line((0, y, width, y), fill=color)
-    draw.ellipse((650, -220, 1320, 450), fill="#25445a")
-    draw.ellipse((-250, 930, 500, 1680), fill="#1b3445")
-    draw.rounded_rectangle((96, 100, 984, 1340), radius=24, outline="#7d9aaa", width=3)
-    draw.text((150, 250), "YANZU", font=_font(38, bold=True), fill="#b7c8d0")
-    draw.line((150, 315, 930, 315), fill="#8197a3", width=2)
-    draw.text((150, 470), "彦祖美学", font=_font(92, bold=True), fill="#f4f1e9")
-    draw.text((155, 620), "让美学研究更有方向", font=_font(38), fill="#d2dce0")
-    draw.text((155, 875), "探索面部美学与影像表达", font=_font(32), fill="#c1d0d6")
-    draw.rounded_rectangle((150, 1050, 930, 1165), radius=12, fill="#e9e6dc")
-    draw.text((200, 1080), "了解更多  ·  yanzumeixue.com", font=_font(36, bold=True), fill="#182530")
+
+    # 模仿 yanzumeixue.com 的现代卡片 UI 容器
+    draw.rounded_rectangle((80, 100, 1000, 1340), radius=32, fill="#ffffff", outline="#e2e8f0", width=2)
+    
+    # 顶部品牌 Tag
+    draw.rounded_rectangle((140, 180, 320, 240), radius=20, fill="#eff6ff")
+    draw.text((170, 195), "颜祖美学", font=_font(24, bold=True), fill="#2563eb")
+
+    # 核心大标题（修正了“颜祖美学”错别字）
+    draw.text((140, 320), "想知道自己颜值", font=_font(64, bold=True), fill="#0f172a")
+    draw.text((140, 410), "是什么水平吗？", font=_font(64, bold=True), fill="#0f172a")
+
+    # 说明小字
+    draw.text((140, 530), "基于多维面部指标与智能算法分析", font=_font(28), fill="#64748b")
+    draw.text((140, 580), "探索属于你的美学数据与风格定位", font=_font(28), fill="#64748b")
+
+    # 模仿网站 UI 的高亮操作按钮
+    draw.rounded_rectangle((140, 750, 940, 910), radius=20, fill="#2563eb")
+    draw.text((215, 805), "立即体验 yanzumeixue.com", font=_font(36, bold=True), fill="#ffffff")
+
+    # 底部提示
+    draw.text((140, 1100), "访问网站，解锁完整面部指标分析报告", font=_font(24), fill="#94a3b8")
+
     image.save(PROMO_IMAGE_PATH, format="PNG", optimize=True)
     return PROMO_IMAGE_PATH
 
