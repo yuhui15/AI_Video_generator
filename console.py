@@ -26,7 +26,7 @@ from xiaohongshu_publisher.publisher import (
 
 
 ROOT = Path(__file__).resolve().parent
-SCRAPER = ROOT / "自动抓取脚本.py"
+SCRAPER = ROOT / "scraper.py"
 DEFAULT_OUTPUT = ROOT
 MAX_REQUEST_BYTES = 64 * 1024
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
