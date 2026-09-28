@@ -92,6 +92,48 @@ def safe_path_component(value):
     return cleaned or "custom_topic"
 
 
+def translate_custom_topic_if_needed(query):
+    """如果自定义搜索词包含中文，则通过 Mistral API 自动将其翻译为规范的英文搜索词"""
+    if not any('\u4e00' <= char <= '\u9fff' for char in query):
+        return query
+    
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise RuntimeError("自定义搜索词包含了中文，自动翻译为英文需要先在网页中绑定 Mistral API Key。")
+    
+    try:
+        response = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": MISTRAL_MODEL_NAME,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Translate the following Chinese image-search query into a concise, professional English Bing Images query. Return only the translated English query, with no quotes, explanation, or Markdown."
+                    },
+                    {
+                        "role": "user",
+                        "content": query
+                    }
+                ],
+                "max_tokens": 64,
+                "temperature": 0.1,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        translated = re.sub(r"\s+", " ", content).strip().strip("\"'")
+        return translated if translated else query
+    except Exception as exc:
+        raise RuntimeError(f"翻译自定义搜索词失败：{exc}") from exc
+
+
 def looksmax_search_query(query):
     query = re.sub(r"\s+", " ", query).strip()
     if "site:looksmax.org" not in query.casefold():
@@ -227,6 +269,7 @@ def crawl_all_63_metrics_bing_clip(
             keyword = info["query"]
             level_desc = info["desc"]
             
+            # 将原本的 high/low 映射为“数值高”和“数值低”子文件夹
             level_folder_name = "数值高" if level == "high" else "数值低"
             level_dir = os.path.join(metric_dir, level_folder_name)
             if not os.path.exists(level_dir):
@@ -436,6 +479,8 @@ if __name__ == "__main__":
         custom_topic = args.custom_topic.strip()
         if not custom_topic:
             parser.error("--custom-topic 不能为空")
+        custom_topic = translate_custom_topic_if_needed(custom_topic)
+        print(f"[INFO] 最终生效的搜索词 (English): {custom_topic}")
         selected_metrics = {
             safe_path_component(custom_topic): {
                 "search": {"query": custom_topic, "desc": "搜索结果"}

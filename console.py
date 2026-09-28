@@ -224,7 +224,7 @@ PAGE = r"""<!doctype html>
         <div class="field">
           <label for="publisher-count">挑选数量</label>
           <input id="publisher-count" type="number" min="1" max="8" value="3">
-          <p class="help" id="publisher-count-help">高和低两边各选这么多张；宣传图不算在内。</p>
+          <p class="help" id="publisher-count-help">“数值高”和“数值低”两边各抽取此数量；最多 8 张/组。最后会附加推广图。</p>
         </div>
         <div class="field">
           <label for="publisher-prompt">给AI的写作要求</label>
@@ -520,7 +520,7 @@ document.getElementById("rewrite-query").addEventListener("click", async () => {
     document.getElementById("rewritten-high").textContent = rewrittenQueries.high;
     document.getElementById("rewritten-low").textContent = rewrittenQueries.low;
     document.getElementById("rewritten-queries").hidden = false;
-    tokenStatus.textContent = `已用 ${data.model} 改写。搜索限定于 looksmax.org；请确认搜索词后开始收集图片。`;
+    tokenStatus.textContent = `已用 ${data.model} 改写。搜索限定于 looksmax.org；请检查高/低搜索词结果后再开始收集。`;
   } catch (error) {
     rewrittenMetric = null;
     rewrittenQueries = null;
@@ -700,7 +700,7 @@ function updatePublisherMode() {
   countInput.max = comparison ? "8" : "17";
   if (Number(countInput.value) > Number(countInput.max)) countInput.value = countInput.max;
   document.getElementById("publisher-count-help").textContent = comparison
-    ? "High 和 Low 各抽取此数量；最多 8 张/组。最后会附加推广图。"
+    ? "“数值高”和“数值低”两边各抽取此数量；最多 8 张/组。最后会附加推广图。"
     : "从所选话题文件夹及其普通子目录中抽取；最多 17 张。最后会附加推广图。";
   renderPublisherFolderOptions();
 }
@@ -722,7 +722,7 @@ function renderPublisherFolderOptions() {
     select.append(option);
   }
   document.getElementById("publisher-folder-help").textContent = mode === "comparison"
-    ? "只显示含 high 和 low 两个图片子文件夹的美学指标。"
+    ? "只显示含“数值高”和“数值低”两个图片子文件夹的外貌特征。"
     : "只显示普通话题文件夹；指标文件夹会从此列表中排除。";
 }
 async function loadPublisherFolders() {
@@ -867,7 +867,7 @@ form.addEventListener("submit", async event => {
     return;
   }
   if (mode === "metrics" && !payload.rewritten_queries) {
-    statusElement.textContent = "请先点击“优化搜索词”，查看 high / low 结果后再抓取。";
+    statusElement.textContent = "请先点击“优化搜索词”，检查高/低搜索词结果后再开始收集。";
     return;
   }
   if (mode === "custom" && !payload.custom_topic) {
@@ -1023,14 +1023,17 @@ def delete_managed_item(relative_path: Any, kind: Any) -> None:
     raise ValueError("删除类型必须是 image 或 folder。")
 
 
-def run_crawler(command: list[str]) -> None:
+def run_crawler(command: list[str], api_key: str | None = None) -> None:
     with job_lock:
         job["status"] = "running"
     try:
         child_env = os.environ.copy()
         child_env.pop("HF_TOKEN", None)
         child_env.pop("HUGGINGFACEHUB_API_TOKEN", None)
-        child_env.pop("MISTRAL_API_KEY", None)
+        if api_key:
+            child_env["MISTRAL_API_KEY"] = api_key
+        else:
+            child_env.pop("MISTRAL_API_KEY", None)
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -1231,8 +1234,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "已有抓取任务运行中。"}, 409)
                 return
             job.update(status="starting", logs=[], returncode=None, error=None)
+            current_api_key = mistral_api_key
 
-        worker = threading.Thread(target=run_crawler, args=(command,), daemon=True)
+        worker = threading.Thread(target=run_crawler, args=(command, current_api_key), daemon=True)
         worker.start()
         self.send_json({"status": "starting"}, 202)
 
@@ -1257,8 +1261,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 is_metric = folder.name in METRIC_NAMES
                 if is_metric:
-                    high_dir = folder / "high"
-                    low_dir = folder / "low"
+                    high_dir = folder / "数值高"
+                    low_dir = folder / "数值低"
                     if high_dir.is_symlink() or low_dir.is_symlink():
                         continue
                     high_count = count_managed_images(high_dir) if high_dir.is_dir() else 0
