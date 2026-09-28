@@ -92,8 +92,8 @@ def safe_path_component(value):
     return cleaned or "custom_topic"
 
 
+
 def translate_custom_topic_if_needed(query):
-    """如果自定义搜索词包含中文，则通过 Mistral API 自动将其翻译为规范的英文搜索词"""
     if not any('\u4e00' <= char <= '\u9fff' for char in query):
         return query
     
@@ -269,9 +269,15 @@ def crawl_all_63_metrics_bing_clip(
             keyword = info["query"]
             level_desc = info["desc"]
             
-            # 将原本的 high/low 映射为“数值高”和“数值低”子文件夹
-            level_folder_name = "数值高" if level == "high" else "数值低"
-            level_dir = os.path.join(metric_dir, level_folder_name)
+            if level == "high":
+                level_folder_name = "数值高"
+                level_dir = os.path.join(metric_dir, "数值高")
+            elif level == "low":
+                level_folder_name = "数值低"
+                level_dir = os.path.join(metric_dir, "数值低")
+            else:
+                level_folder_name = level_desc
+                level_dir = metric_dir
             if not os.path.exists(level_dir):
                 os.makedirs(level_dir)
                 

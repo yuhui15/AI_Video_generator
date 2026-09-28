@@ -110,7 +110,6 @@ def build_post_images(
         if count > 8:
             raise ValueError("数值高和数值低对比模式每个级别最多抽取 8 张（另加 1 张推广图）。")
         
-        # 扫描“数值高”和“数值低”文件夹
         high_images = _image_files(folder / "数值高")
         low_images = _image_files(folder / "数值低")
         
