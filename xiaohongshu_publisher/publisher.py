@@ -37,7 +37,10 @@ def open_filled_draft(
     options.add_argument(f"--user-data-dir={PROFILE_DIR}")
     options.add_argument("--start-maximized")
     
-    driver = uc.Chrome(options=options)
+    try:
+        driver = uc.Chrome(options=options, version_main=153)
+    except Exception:
+        driver = uc.Chrome(options=options)
 
     try:
         status_callback("正在打开小红书创作者平台；如未登录，请在浏览器中完成登录。")
