@@ -46,7 +46,6 @@ def ensure_promo_image() -> Path:
 
     PROMO_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
     width, height = 1080, 1440
-    # 采用高雅的现代AI科技感深色渐变背景，贴合 yanzumeixue.com 品牌定位
     image = Image.new("RGB", (width, height), "#0f172a")
     draw = ImageDraw.Draw(image)
     
@@ -59,21 +58,16 @@ def ensure_promo_image() -> Path:
         )
         draw.line((0, y, width, y), fill=color)
 
-    # 绘制高雅的现代数据科技感卡片 UI 容器
     draw.rounded_rectangle((70, 80, 1010, 1360), radius=28, fill="#1e293b", outline="#334155", width=2)
     
-    # 顶部品牌 Tag：“颜祖美学 · 颜问”
     draw.rounded_rectangle((130, 150, 380, 215), radius=16, fill="#3b82f6")
     draw.text((155, 168), "颜祖美学 · 颜问", font=_font(22, bold=True), fill="#ffffff")
 
-    # 核心大标题
     draw.text((130, 280), "想知道自己颜值", font=_font(60, bold=True), fill="#f8fafc")
     draw.text((130, 360), "是什么水平吗？", font=_font(60, bold=True), fill="#38bdf8")
 
-    # 平台定位与核心指标说明（严格对应官方网站特性）
     draw.text((130, 470), "AI 驱动的专业颜值评测与量化分析平台", font=_font(26, bold=True), fill="#94a3b8")
     
-    # 核心四大支柱与指标展示小卡片区
     features = [
         ("100+ 硬核维度", "多维面部指标解码分析"),
         ("四大支柱体系", "结构、和谐度、轮廓、二态性"),
@@ -85,11 +79,9 @@ def ensure_promo_image() -> Path:
         draw.text((160, card_y + 52), desc_txt, font=_font(20), fill="#94a3b8")
         card_y += 110
 
-    # 网站引导高亮按钮
     draw.rounded_rectangle((130, 930, 950, 1060), radius=18, fill="#2563eb")
     draw.text((220, 972), "立即体验 yanzumeixue.com", font=_font(34, bold=True), fill="#ffffff")
 
-    # 底部说明
     draw.text((130, 1160), "客观评测 · 专属形象顾问 · 科学重塑形象", font=_font(22), fill="#64748b")
     draw.text((130, 1200), "访问网站解锁你的个性化提升方案", font=_font(22), fill="#64748b")
 
@@ -117,12 +109,14 @@ def build_post_images(
     if mode == "comparison":
         if count > 8:
             raise ValueError("数值高和数值低对比模式每个级别最多抽取 8 张（另加 1 张推广图）。")
-        # 修改点：从“数值高”和“数值低”文件夹中查找照片
+        
+        # 扫描“数值高”和“数值低”文件夹
         high_images = _image_files(folder / "数值高")
         low_images = _image_files(folder / "数值低")
+        
         if len(high_images) < count or len(low_images) < count:
             raise ValueError(
-                f"图片数量不足：数值高文件夹含有 {len(high_images)} 张，数值低文件夹含有 {len(low_images)} 张，"
+                f"图片数量不足：数值高文件夹有 {len(high_images)} 张，数值低文件夹有 {len(low_images)} 张，"
                 f"每组需要 {count} 张。"
             )
         selected = random.sample(high_images, count) + random.sample(low_images, count)
