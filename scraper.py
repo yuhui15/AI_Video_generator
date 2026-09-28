@@ -227,7 +227,8 @@ def crawl_all_63_metrics_bing_clip(
             keyword = info["query"]
             level_desc = info["desc"]
             
-            level_dir = os.path.join(metric_dir, level)
+            level_folder_name = "数值高" if level == "high" else "数值低"
+            level_dir = os.path.join(metric_dir, level_folder_name)
             if not os.path.exists(level_dir):
                 os.makedirs(level_dir)
                 
@@ -235,14 +236,14 @@ def crawl_all_63_metrics_bing_clip(
             success_count = len(existing_files)
             
             if success_count >= target_count_per_category:
-                print(f"   [已完成] 目标级别 [{level.upper()} -> {level_desc}] 已存有 {success_count} 张合格照片，跳过。")
+                print(f"   [已完成] 目标级别 [{level_folder_name} -> {level_desc}] 已存有 {success_count} 张合格照片，跳过。")
                 continue
 
             page_scroll_attempts = 0
             max_scrolls = 6
             
             while success_count < target_count_per_category and page_scroll_attempts < max_scrolls:
-                print(f"\n🚀 目标级别 [{level.upper()} -> {level_desc}] -> 当前进度: {success_count}/{target_count_per_category} 张，正在通过 Bing 搜索...")
+                print(f"\n🚀 目标级别 [{level_folder_name} -> {level_desc}] -> 当前进度: {success_count}/{target_count_per_category} 张，正在通过 Bing 搜索...")
                 
                 encoded_keyword = quote(keyword)
                 search_url = f"https://www.bing.com/images/search?q={encoded_keyword}"
@@ -315,7 +316,7 @@ def crawl_all_63_metrics_bing_clip(
 
             if success_count < target_count_per_category:
                 print(
-                    f"   ⚠️ [跳过] 目标级别 [{level.upper()} -> {level_desc}] "
+                    f"   ⚠️ [跳过] 目标级别 [{level_folder_name} -> {level_desc}] "
                     f"有效图片不足 {target_count_per_category} 张（最终收集到 {success_count} 张），自动跳至下一指标。"
                 )
 

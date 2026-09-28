@@ -82,7 +82,7 @@ PAGE = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>图片抓取控制台</title>
+  <title>图片收集小助手</title>
   <style>
     :root { color-scheme: light; --bg:#f1f2f3; --panel:#fff; --line:#d7dade; --muted:#687078; --text:#171a1d; --accent:#26618a; --blue:#17699b; --nav:#14171b; }
     * { box-sizing:border-box; }
@@ -191,50 +191,50 @@ PAGE = r"""<!doctype html>
   <header class="hero">
     <div>
       <p class="eyebrow">IMAGE RESEARCH / LOCAL TOOL</p>
-      <h1>图片抓取控制台</h1>
+      <h1>图片收集小助手</h1>
     </div>
     <div class="hero-copy">
-      <p>从预设指标或自定义话题出发，整理可供研究的图片样本。</p>
-      <p>设定筛选标准，让每一次采集都有清晰的方向。</p>
-      <span class="badge">仅监听本机 · 不会公开到网络</span>
+      <p>从预设的外貌特征或自定义话题出发，收集有趣的图片样本。</p>
+      <p>设置挑选标准，让每次收集都更有方向。</p>
+      <span class="badge">只在你的电脑本地运行 · 安全放心</span>
     </div>
   </header>
     <nav class="nav-actions" aria-label="页面">
-      <button type="button" id="show-crawler" aria-current="page">抓取控制台</button>
+      <button type="button" id="show-crawler" aria-current="page">收集面板</button>
       <button type="button" id="show-manager">图片管理</button>
-      <button type="button" id="show-publisher">小红书发布</button>
+      <button type="button" id="show-publisher">小红书助手</button>
     </nav>
     <section id="publisher-page" hidden>
       <section class="panel">
-        <h2>小红书图文准备与发布</h2>
-        <p>从本地图片目录抽取素材，用 Ministral 14B 生成文案并预览；图片最后自动附加颜祖美学推广图。</p>
-        <div class="warning">生成的草稿不会自动公开发布。打开创作者平台后，请检查图片、标题和正文，并由你手动点击小红书页面上的“发布”。请确保你有权使用所选图片。</div>
+        <h2>小红书图文一键准备</h2>
+        <p>从本地图片文件夹里挑选照片，用智能助手自动写好文案并预览；最后会自动加上一张好看的宣传图。</p>
+        <div class="warning">生成的草稿不会自动发到网上。打开小红书后，请检查图片和文字，确认无误后自己点击“发布”按钮哦。</div>
         <div class="field">
-          <label for="publisher-mode">内容类别</label>
+          <label for="publisher-mode">选择类型</label>
           <select id="publisher-mode">
-            <option value="comparison">63 项美学指标：High / Low 对比</option>
-            <option value="topic">话题文件夹：自定义文案</option>
+            <option value="comparison">63 种外貌特征：高低对比</option>
+            <option value="topic">自定义话题文件夹：自由写文案</option>
           </select>
         </div>
         <div class="field">
-          <label for="publisher-folder">素材文件夹</label>
+          <label for="publisher-folder">图片文件夹</label>
           <select id="publisher-folder"></select>
           <p class="help" id="publisher-folder-help"></p>
         </div>
         <div class="field">
-          <label for="publisher-count">抽取数量</label>
+          <label for="publisher-count">挑选数量</label>
           <input id="publisher-count" type="number" min="1" max="8" value="3">
-          <p class="help" id="publisher-count-help">High 和 Low 各抽取此数量；推广图不计入数量。</p>
+          <p class="help" id="publisher-count-help">高和低两边各选这么多张；宣传图不算在内。</p>
         </div>
         <div class="field">
-          <label for="publisher-prompt">创作者补充 Prompt</label>
-          <textarea id="publisher-prompt" maxlength="2000" placeholder="补充语气、重点或内容结构要求"></textarea>
+          <label for="publisher-prompt">给AI的写作要求</label>
+          <textarea id="publisher-prompt" maxlength="2000" placeholder="比如：语气要轻松活泼、重点突出等"></textarea>
         </div>
-        <button type="button" class="submit" id="prepare-publisher">随机抽图并生成文案</button>
-        <p id="publisher-state" role="status" aria-live="polite">先选择素材文件夹，再生成草稿。</p>
+        <button type="button" class="submit" id="prepare-publisher">随机选图并写文案</button>
+        <p id="publisher-state" role="status" aria-live="polite">先选择图片文件夹，再生成草稿。</p>
       </section>
       <section class="panel" id="publisher-preview-panel" hidden>
-        <h2>发布预览</h2>
+        <h2>效果预览</h2>
         <p id="publisher-image-summary"></p>
         <div id="publisher-images"></div>
         <div class="field">
@@ -246,17 +246,17 @@ PAGE = r"""<!doctype html>
           <textarea id="publisher-content" maxlength="1000"></textarea>
         </div>
         <div class="publisher-actions">
-          <button type="button" class="item-action" id="regenerate-publisher">重新抽图并生成文案</button>
-          <button type="button" class="submit" id="open-publisher">打开小红书编辑页并填入草稿</button>
-          <button type="button" class="item-action" id="close-publisher" hidden>关闭发布浏览器</button>
+          <button type="button" class="item-action" id="regenerate-publisher">换一组图片和文案</button>
+          <button type="button" class="submit" id="open-publisher">打开小红书并自动填入草稿</button>
+          <button type="button" class="item-action" id="close-publisher" hidden>关闭小红书浏览器</button>
         </div>
       </section>
     </section>
     <section id="manager-page" hidden>
       <section class="panel">
-        <h2>图片与文件夹管理</h2>
-        <p>管理项目目录中的 JPG、JPEG、PNG、WEBP 图片。删除文件夹会永久删除其中所有内容，请仔细确认。</p>
-        <p class="help">不会列出或删除 .git、虚拟环境、models、music 等项目运行目录。</p>
+        <h2>图片文件夹管理</h2>
+        <p>管理电脑里的图片。删除文件夹会把里面的东西全部清空，操作时要小心哦。</p>
+        <p class="help">系统重要文件夹会自动受到保护，不会被误删。</p>
         <div class="toolbar">
           <button type="button" id="refresh-library">刷新列表</button>
           <span class="help" id="library-status" role="status"></span>
@@ -283,74 +283,74 @@ PAGE = r"""<!doctype html>
     <section id="crawler-page">
     <form id="crawl-form">
     <section class="panel">
-      <h2>1. 选择抓取内容</h2>
+      <h2>1. 选择要收集的内容</h2>
       <div class="mode">
-        <label><input type="radio" name="mode" value="metrics" checked> 选择一个指标 + Ministral 14B 改写</label>
-        <label><input type="radio" name="mode" value="custom"> 自定义搜索话题</label>
+        <label><input type="radio" name="mode" value="metrics" checked> 选择一个外貌特征 + 智能助手优化词语</label>
+        <label><input type="radio" name="mode" value="custom"> 自定义搜索词</label>
       </div>
       <div id="metric-section" class="field">
         <div class="toolbar">
-          <input id="metric-filter" type="text" placeholder="搜索指标名称">
-          <span class="help" id="selected-count">请选择一个指标</span>
+          <input id="metric-filter" type="text" placeholder="搜索外貌特征名字">
+          <span class="help" id="selected-count">请选择一个外貌特征</span>
         </div>
-        <div id="metrics" aria-label="63 项指标列表"></div>
-        <p class="help" id="metric-help">选定指标后点击“改写搜索词”，核对 high / low 搜索词，再开始抓取。</p>
-        <p class="help">保存文件夹始终使用改写前选中的指标名称；改写后的搜索词只用于搜索，不会改变文件夹名。</p>
-        <p class="help">图片搜索限制在 looksmax.org，使用 Bing 图片搜索站内结果。</p>
-        <p class="help">模型：ministral-14b-2512（通过 Mistral API 调用）</p>
-        <label for="mistral-api-key">Mistral API Key</label>
+        <div id="metrics" aria-label="63 种外貌特征列表"></div>
+        <p class="help" id="metric-help">选好特征后点“优化搜索词”，检查一下高/低搜索词，就可以开始收集了。</p>
+        <p class="help">保存文件夹始终使用改写前选中的指标名称；改写后的搜索词只用于检索，不会改变文件夹名。</p>
+        <p class="help">图片主要从知名外貌讨论网站的搜索结果中寻找。</p>
+        <p class="help">智能助手：大语言模型（云端安全调用）</p>
+        <label for="mistral-api-key">密钥 (API Key)</label>
         <div class="token-controls">
-          <input id="mistral-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴 Mistral API Key" aria-describedby="token-help token-status">
-          <button type="button" id="bind-token">绑定 API Key</button>
-          <button type="button" id="clear-token">清除 API Key</button>
+          <input id="mistral-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴 密钥 (API Key)" aria-describedby="token-help token-status">
+          <button type="button" id="bind-token">保存密钥</button>
+          <button type="button" id="clear-token">清除密钥</button>
         </div>
-        <p class="help" id="token-help">API Key 只保存在本机服务内存中，并在抓取时传给子进程；不会写入文件、浏览器存储或任务日志。关闭服务后需重新输入。</p>
-        <p id="token-status" role="status" aria-live="polite" data-configured="false">正在检查 API Key 状态…</p>
-        <button type="button" id="rewrite-query">改写搜索词</button>
+        <p class="help" id="token-help">密钥只临时保存在你的电脑内存里，非常安全，关掉软件后就会自动消失。</p>
+        <p id="token-status" role="status" aria-live="polite" data-configured="false">正在检查密钥状态…</p>
+        <button type="button" id="rewrite-query">优化搜索词</button>
         <div id="rewritten-queries" class="field" aria-live="polite" hidden>
-          <p><strong>High 搜索词</strong></p>
+          <p><strong>高特征搜索词</strong></p>
           <pre id="rewritten-high"></pre>
-          <p><strong>Low 搜索词</strong></p>
+          <p><strong>低特征搜索词</strong></p>
           <pre id="rewritten-low"></pre>
         </div>
       </div>
       <div id="custom-section" class="field" hidden>
-        <label for="custom-topic">抓取标题 / 搜索话题</label>
-        <input id="custom-topic" type="text" maxlength="240" placeholder="例如：adult male fashion model portrait">
-        <p class="help">该文本将直接作为 Bing 图片搜索词，同时用于创建结果子目录。</p>
+        <label for="custom-topic">自定义搜索关键词</label>
+        <input id="custom-topic" type="text" maxlength="240" placeholder="例如：帅气男生侧脸写真">
+        <p class="help">这个词会直接用来搜图片，也会作为保存文件夹的名字。</p>
       </div>
     </section>
     <section class="panel">
-      <h2>2. 设置筛选和保存选项</h2>
+      <h2>2. 设置挑选和保存要求</h2>
       <div class="field">
-        <label for="threshold">CLIP 筛选严格度</label>
+        <label for="threshold">图片挑选严格程度</label>
         <div class="range-row">
           <span class="help">宽松</span>
           <input id="threshold" type="range" min="0.35" max="0.95" step="0.01" value="0.60">
           <span class="help">严格</span>
           <output id="threshold-value" for="threshold">0.60 · 标准</output>
         </div>
-        <p class="help">值越高，CLIP 对“清晰、单人、真人面部、眼睛可见”的要求越高，合格图片可能更少。</p>
+        <p class="help">数值越高，系统对“照片清晰、只有一个人、真人、眼睛能看清”的要求就越严格，挑出来的照片会更少但质量更高。</p>
       </div>
       <div class="grid">
         <div class="field">
-          <label for="target-count">每个级别目标图片数</label>
+          <label for="target-count">每个分类需要的图片数量</label>
           <input id="target-count" type="number" min="1" max="1000" value="20">
         </div>
         <div class="field">
-          <label for="output-dir">图片保存根目录</label>
+          <label for="output-dir">图片保存的文件夹位置</label>
           <input id="output-dir" type="text" value="__DEFAULT_OUTPUT__">
-          <p class="help">默认直接保存在项目根目录下，以原始指标名创建文件夹（例如“面部长宽比”）；改写词不会改变文件夹名。相对路径以项目根目录为基准。</p>
+          <p class="help">默认保存在软件同级文件夹中，会自动用特征名字建文件夹。</p>
         </div>
       </div>
-      <div class="warning">请确认抓取和使用图片符合网站条款、版权和肖像权要求。CLIP 是图文相似度筛选，不是准确的人脸或美学测量工具。</div>
+      <div class="warning">请注意遵守网络版权和肖像权。这只是电脑自动挑选助手，不能代替专业测量。</div>
     </section>
-    <button class="submit" id="start" type="submit">开始抓取</button>
+    <button class="submit" id="start" type="submit">开始收集图片</button>
   </form>
   <section class="panel" aria-live="polite">
-    <h2>任务状态</h2>
+    <h2>当前任务状态</h2>
     <div id="status">空闲</div>
-    <pre id="logs">尚未启动抓取任务。</pre>
+    <pre id="logs">还没有开始收集任务。</pre>
   </section>
   </section>
 </main>
@@ -392,7 +392,7 @@ function updateCount() {
   const selected = metricsRoot.querySelector("input:checked");
   document.getElementById("selected-count").textContent = selected
     ? `已选：${selected.value}`
-    : "请选择一个指标";
+    : "请选择一个外貌特征";
   if (rewrittenMetric !== (selected && selected.value)) {
     rewrittenMetric = null;
     rewrittenQueries = null;
@@ -438,8 +438,8 @@ async function refreshTokenStatus() {
     if (!response.ok) throw new Error(data.error || "无法读取 API Key 状态");
     tokenStatus.dataset.configured = String(data.configured);
     tokenStatus.textContent = data.configured
-      ? "Mistral API Key 已绑定到本机服务（只显示状态，不回显密钥）。"
-      : "尚未绑定 Mistral API Key；改写搜索词前请先绑定。";
+      ? "密钥 (API Key) 已绑定到本机服务（只显示状态，不回显密钥）。"
+      : "尚未绑定 密钥 (API Key)；优化搜索词前请先绑定。";
   } catch (error) {
     tokenStatus.dataset.configured = "false";
     tokenStatus.textContent = `API Key 状态读取失败：${error.message}`;
@@ -449,7 +449,7 @@ document.getElementById("bind-token").addEventListener("click", async () => {
   const token = tokenInput.value.trim();
   if (!token) {
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = "请先输入 Mistral API Key。";
+    tokenStatus.textContent = "请先输入 密钥 (API Key)。";
     tokenInput.focus();
     return;
   }
@@ -466,7 +466,7 @@ document.getElementById("bind-token").addEventListener("click", async () => {
     if (!response.ok) throw new Error(data.error || "API Key 绑定失败");
     tokenInput.value = "";
     tokenStatus.dataset.configured = "true";
-    tokenStatus.textContent = "Mistral API Key 已绑定到本机服务内存；页面不会保存或回显它。";
+    tokenStatus.textContent = "密钥 (API Key) 已绑定到本机服务内存；页面不会保存或回显它。";
   } catch (error) {
     tokenStatus.dataset.configured = "false";
     tokenStatus.textContent = `API Key 绑定失败：${error.message}`;
@@ -488,7 +488,7 @@ document.getElementById("clear-token").addEventListener("click", async () => {
     if (!response.ok) throw new Error(data.error || "API Key 清除失败");
     tokenInput.value = "";
     tokenStatus.dataset.configured = "false";
-    tokenStatus.textContent = "Mistral API Key 已从本机服务内存中清除。";
+    tokenStatus.textContent = "密钥 (API Key) 已从本机服务内存中清除。";
   } catch (error) {
     tokenStatus.textContent = `API Key 清除失败：${error.message}`;
   } finally {
@@ -520,7 +520,7 @@ document.getElementById("rewrite-query").addEventListener("click", async () => {
     document.getElementById("rewritten-high").textContent = rewrittenQueries.high;
     document.getElementById("rewritten-low").textContent = rewrittenQueries.low;
     document.getElementById("rewritten-queries").hidden = false;
-    tokenStatus.textContent = `已用 ${data.model} 改写。搜索限定于 looksmax.org；请确认搜索词后开始抓取。`;
+    tokenStatus.textContent = `已用 ${data.model} 改写。搜索限定于 looksmax.org；请确认搜索词后开始收集图片。`;
   } catch (error) {
     rewrittenMetric = null;
     rewrittenQueries = null;
@@ -738,7 +738,7 @@ async function loadPublisherFolders() {
     publisherFolders = data.folders;
     updatePublisherMode();
   } catch (error) {
-    document.getElementById("publisher-state").textContent = `读取素材文件夹失败：${error.message}`;
+    document.getElementById("publisher-state").textContent = `读取图片文件夹失败：${error.message}`;
   }
 }
 function renderPublisherPreview(data) {
@@ -770,7 +770,7 @@ async function preparePublisherDraft() {
   const folder = document.getElementById("publisher-folder").value;
   const count = Number(document.getElementById("publisher-count").value);
   if (!folder) {
-    document.getElementById("publisher-state").textContent = "请先选择素材文件夹。";
+    document.getElementById("publisher-state").textContent = "请先选择图片文件夹。";
     return;
   }
   button.disabled = true;
@@ -846,7 +846,7 @@ document.getElementById("close-publisher").addEventListener("click", async () =>
     document.getElementById("publisher-state").textContent = data.message;
     await pollPublisherStatus();
   } catch (error) {
-    document.getElementById("publisher-state").textContent = `关闭发布浏览器失败：${error.message}`;
+    document.getElementById("publisher-state").textContent = `关闭小红书浏览器失败：${error.message}`;
   }
 });
 form.addEventListener("submit", async event => {
@@ -863,15 +863,15 @@ form.addEventListener("submit", async event => {
     output_dir: document.getElementById("output-dir").value.trim()
   };
   if (mode === "metrics" && selectedMetrics.length !== 1) {
-    statusElement.textContent = "请选择一个指标。";
+    statusElement.textContent = "请选择一个外貌特征。";
     return;
   }
   if (mode === "metrics" && !payload.rewritten_queries) {
-    statusElement.textContent = "请先点击“改写搜索词”，查看 high / low 结果后再抓取。";
+    statusElement.textContent = "请先点击“优化搜索词”，查看 high / low 结果后再抓取。";
     return;
   }
   if (mode === "custom" && !payload.custom_topic) {
-    statusElement.textContent = "请填写自定义搜索话题。";
+    statusElement.textContent = "请填写自定义搜索词。";
     return;
   }
   startButton.disabled = true;
@@ -1204,7 +1204,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path in {"/api/publisher/prepare", "/api/publisher/launch", "/api/publisher/close"}:
             if not self.is_same_origin_request():
-                self.send_json({"error": "小红书发布请求只允许来自当前本机网页。"}, 403)
+                self.send_json({"error": "小红书助手请求只允许来自当前本机网页。"}, 403)
                 return
             if self.path == "/api/publisher/prepare":
                 self.prepare_publisher_draft()
@@ -1277,7 +1277,7 @@ class Handler(BaseHTTPRequestHandler):
                     "is_metric": is_metric,
                 })
         except OSError as exc:
-            self.send_json({"error": f"读取素材文件夹失败：{exc}"}, 500)
+            self.send_json({"error": f"读取图片文件夹失败：{exc}"}, 500)
             return
         self.send_json({"folders": sorted(folders, key=lambda item: item["name"].casefold())})
 
@@ -1292,14 +1292,14 @@ class Handler(BaseHTTPRequestHandler):
             if mode not in {"comparison", "topic"}:
                 raise ValueError("请选择有效的发布素材模式。")
             if not isinstance(folder, str) or not folder.strip() or len(folder) > 500:
-                raise ValueError("请选择有效的素材文件夹。")
+                raise ValueError("请选择有效的图片文件夹。")
             if isinstance(count, bool) or not isinstance(count, int):
-                raise ValueError("抽取数量必须是整数。")
+                raise ValueError("挑选数量必须是整数。")
             if not isinstance(prompt, str) or len(prompt) > 2000:
                 raise ValueError("创作者 Prompt 不能超过 2000 个字符。")
             requested_folder = ROOT / folder
             if requested_folder.is_symlink():
-                raise ValueError("不能使用符号链接作为素材文件夹。")
+                raise ValueError("不能使用符号链接作为图片文件夹。")
             selected_folder = requested_folder.resolve()
             if (
                 selected_folder.parent != ROOT
@@ -1307,16 +1307,15 @@ class Handler(BaseHTTPRequestHandler):
                 or not selected_folder.is_dir()
                 or selected_folder.name.lower() in PROTECTED_DIRS
             ):
-                raise ValueError("只能选择项目根目录中可访问的素材文件夹。")
+                raise ValueError("只能选择项目根目录中可访问的图片文件夹。")
             is_metric = selected_folder.name in METRIC_NAMES
             if (mode == "comparison") != is_metric:
-                raise ValueError("所选素材文件夹与当前模式不匹配，请重新选择。")
+                raise ValueError("所选图片文件夹与当前模式不匹配，请重新选择。")
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, 400)
             return
 
         with publisher_lock:
-            # 修改处：去掉了对 ready 等状态的拦截，只在当前正在生成（generating）时防止并发冲突
             if publisher_state["status"] == "generating":
                 self.send_json({"error": "当前正在生成草稿，请稍候。"}, 409)
                 return
@@ -1326,8 +1325,8 @@ class Handler(BaseHTTPRequestHandler):
             api_key = mistral_api_key
         if not api_key:
             with publisher_lock:
-                publisher_state.update(status="error", message="请先绑定 Mistral API Key。")
-            self.send_json({"error": "请先在抓取控制台绑定 Mistral API Key。"}, 400)
+                publisher_state.update(status="error", message="请先绑定 密钥 (API Key)。")
+            self.send_json({"error": "请先在收集面板绑定 密钥 (API Key)。"}, 400)
             return
 
         try:
@@ -1466,11 +1465,11 @@ class Handler(BaseHTTPRequestHandler):
 
         with job_lock:
             if job["status"] in {"starting", "running"}:
-                self.send_json({"error": "抓取任务运行期间不能改写搜索词。"}, 409)
+                self.send_json({"error": "抓取任务运行期间不能优化搜索词。"}, 409)
                 return
             api_key = mistral_api_key
         if api_key is None:
-            self.send_json({"error": "请先绑定 Mistral API Key。"}, 400)
+            self.send_json({"error": "请先绑定 密钥 (API Key)。"}, 400)
             return
 
         child_env = os.environ.copy()
@@ -1546,7 +1545,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("请求格式错误。")
                 token_value = payload.get("api_key")
                 if not isinstance(token_value, str):
-                    raise ValueError("请输入有效的 Mistral API Key。")
+                    raise ValueError("请输入有效的 密钥 (API Key)。")
                 token = token_value.strip()
                 if not token or len(token) > 4096 or any(ord(char) < 32 for char in token):
                     raise ValueError("API Key 不能为空、不能超过 4096 个字符，也不能包含控制字符。")
@@ -1594,7 +1593,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.35 <= threshold <= 0.95:
             raise ValueError("CLIP 严格度必须在 0.35 到 0.95 之间。")
         if isinstance(target_count, bool) or not isinstance(target_count, int) or not 1 <= target_count <= 1000:
-            raise ValueError("每个级别目标图片数必须在 1 到 1000 之间。")
+            raise ValueError("每个分类需要的图片数量必须在 1 到 1000 之间。")
         if not isinstance(output_dir, str) or not output_dir.strip() or len(output_dir) > 1000:
             raise ValueError("请填写有效的图片保存目录。")
 
@@ -1615,12 +1614,12 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "custom":
             topic = payload.get("custom_topic")
             if not isinstance(topic, str) or not topic.strip() or len(topic) > 240:
-                raise ValueError("自定义搜索话题不能为空，且不能超过 240 个字符。")
+                raise ValueError("自定义搜索词不能为空，且不能超过 240 个字符。")
             command.extend(["--custom-topic", topic.strip()])
         else:
             metrics = payload.get("metrics")
             if not isinstance(metrics, list) or len(metrics) != 1:
-                raise ValueError("请选择一个指标。")
+                raise ValueError("请选择一个外貌特征。")
             if not all(isinstance(name, str) and name in METRIC_NAMES for name in metrics):
                 raise ValueError("指标列表包含无效选项，请刷新页面后重试。")
             rewritten_queries = payload.get("rewritten_queries")
@@ -1651,7 +1650,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.getenv("PORT", "8765"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"图片抓取控制台已启动：http://127.0.0.1:{port}")
+    print(f"图片收集小助手已启动：http://127.0.0.1:{port}")
     print("关闭此终端即可停止网页服务；抓取任务运行期间请保持窗口开启。")
     try:
         server.serve_forever()
