@@ -23,7 +23,7 @@ def _image_files(folder: Path, recursive: bool = False) -> list[Path]:
             and not path.is_symlink()
             and path.suffix.lower() in IMAGE_EXTENSIONS
             and not any(
-                part.lower() in {"high", "low", ".git", ".venv", "venv", "env", "models", "music"}
+                part.lower() in {"数值高", "数值低", ".git", ".venv", "venv", "env", "models", "music"}
                 for part in path.relative_to(folder).parts[:-1]
             )
         ),
@@ -110,22 +110,23 @@ def build_post_images(
     if any(part.lower() in {".git", ".venv", "venv", "env", "__pycache__", "models", "music", "node_modules"} for part in Path(folder_path).parts):
         raise ValueError("不能从受保护的项目目录中抽取图片。")
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise ValueError("抽取数量必须是正整数。")
+        raise ValueError("挑选数量必须是正整数。")
 
     selected: list[Path] = []
     group_counts: dict[str, int] = {}
     if mode == "comparison":
         if count > 8:
-            raise ValueError("高低对比模式每个级别最多抽取 8 张（另加 1 张推广图）。")
-        high_images = _image_files(folder / "high")
-        low_images = _image_files(folder / "low")
+            raise ValueError("数值高和数值低对比模式每个级别最多抽取 8 张（另加 1 张推广图）。")
+        # 修改点：从“数值高”和“数值低”文件夹中查找照片
+        high_images = _image_files(folder / "数值高")
+        low_images = _image_files(folder / "数值低")
         if len(high_images) < count or len(low_images) < count:
             raise ValueError(
-                f"图片数量不足：high 有 {len(high_images)} 张，low 有 {len(low_images)} 张，"
+                f"图片数量不足：数值高文件夹含有 {len(high_images)} 张，数值低文件夹含有 {len(low_images)} 张，"
                 f"每组需要 {count} 张。"
             )
         selected = random.sample(high_images, count) + random.sample(low_images, count)
-        group_counts = {"high": count, "low": count}
+        group_counts = {"数值高": count, "数值低": count}
     elif mode == "topic":
         if count > 17:
             raise ValueError("话题模式最多抽取 17 张（另加 1 张推广图）。")
