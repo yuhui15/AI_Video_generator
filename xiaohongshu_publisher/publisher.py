@@ -31,6 +31,7 @@ def open_filled_draft(
     image_paths: list[Path],
     title: str,
     content: str,
+    visibility: str,
     status_callback: Callable[[str], None],
 ) -> uc.Chrome:
     options = uc.ChromeOptions()
@@ -127,7 +128,18 @@ def open_filled_draft(
                 driver,
                 _describe_missing_editor(driver),
             ) from exc
-            
+
+        if visibility == "private":
+            status_callback("正在将可见范围设置为“仅自己可见”。")
+            try:
+                WebDriverWait(driver, 20).until(lambda d: _set_private_visibility(d))
+            except TimeoutException as exc:
+                raise PublisherManualIntervention(
+                    driver,
+                    "草稿已填入，但未能自动把可见范围设为“仅自己可见”。"
+                    "请在页面底部的权限/可见范围设置中手动选择“仅自己可见”后再发布。",
+                ) from exc
+
         status_callback(
             "草稿已成功填入浏览器！请检查图片顺序、标题和正文，并在小红书页面手动点击发布。"
         )
@@ -185,6 +197,58 @@ def _click_upload_image_mode(driver: uc.Chrome) -> bool:
                 except Exception:
                     continue
     return False
+
+
+PRIVATE_LABEL = "仅自己可见"
+PUBLIC_LABEL = "公开可见"
+
+
+def _set_private_visibility(driver: uc.Chrome) -> bool:
+    # 下拉框收起时只显示当前值；已是“仅自己可见”即完成。
+    if _visible_text_elements(driver, PRIVATE_LABEL) and not _visible_text_elements(driver, PUBLIC_LABEL):
+        return True
+    # 单选/已展开的下拉：直接点“仅自己可见”。
+    for element in _visible_text_elements(driver, PRIVATE_LABEL):
+        if _safe_click(driver, element):
+            time.sleep(0.5)
+            if not _visible_text_elements(driver, PUBLIC_LABEL) or _looks_selected(element):
+                return True
+    # 收起的下拉：先点当前值“公开可见”展开选项。
+    for element in _visible_text_elements(driver, PUBLIC_LABEL):
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        if _safe_click(driver, element):
+            time.sleep(0.5)
+            break
+    return False
+
+
+def _visible_text_elements(driver: uc.Chrome, text: str) -> list:
+    xpath = f"//*[normalize-space(text())='{text}']"
+    return [element for element in driver.find_elements(By.XPATH, xpath) if element.is_displayed()]
+
+
+def _looks_selected(element) -> bool:
+    try:
+        marked = element.find_elements(
+            By.XPATH,
+            "./ancestor-or-self::*[position() <= 4][contains(@class, 'checked') "
+            "or contains(@class, 'active') or contains(@class, 'selected') or @aria-checked='true']",
+        )
+        return bool(marked)
+    except Exception:
+        return False
+
+
+def _safe_click(driver: uc.Chrome, element) -> bool:
+    try:
+        element.click()
+        return True
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except Exception:
+            return False
 
 
 def _describe_missing_upload_tab(driver: uc.Chrome) -> str:

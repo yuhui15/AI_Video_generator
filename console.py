@@ -245,6 +245,13 @@ PAGE = r"""<!doctype html>
           <label for="publisher-content">正文（最多 1000 字）</label>
           <textarea id="publisher-content" maxlength="1000"></textarea>
         </div>
+        <div class="field">
+          <label for="publisher-visibility">谁可以看</label>
+          <select id="publisher-visibility">
+            <option value="public">公开（public）</option>
+            <option value="private">仅自己可见（private）</option>
+          </select>
+        </div>
         <div class="publisher-actions">
           <button type="button" class="item-action" id="regenerate-publisher">换一组图片和文案</button>
           <button type="button" class="submit" id="open-publisher">打开小红书并自动填入草稿</button>
@@ -808,7 +815,8 @@ document.getElementById("open-publisher").addEventListener("click", async event 
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         title:document.getElementById("publisher-title").value,
-        content:document.getElementById("publisher-content").value
+        content:document.getElementById("publisher-content").value,
+        visibility:document.getElementById("publisher-visibility").value
       })
     });
     const data = await response.json();
@@ -1065,6 +1073,7 @@ def run_publisher_browser(
     image_paths: list[Path],
     title: str,
     content: str,
+    visibility: str,
 ) -> None:
     global publisher_driver
 
@@ -1073,7 +1082,7 @@ def run_publisher_browser(
             publisher_state.update(status="starting", message=message)
 
     try:
-        driver = open_filled_draft(image_paths, title, content, update_status)
+        driver = open_filled_draft(image_paths, title, content, visibility, update_status)
     except PublisherEditorNotFound as exc:
         with publisher_lock:
             publisher_driver = exc.driver
@@ -1092,7 +1101,11 @@ def run_publisher_browser(
         publisher_driver = driver
         publisher_state.update(
             status="ready",
-            message="草稿已填入浏览器。请检查图片顺序、标题和正文，并手动点击发布。",
+            message=(
+                "草稿已填入浏览器"
+                + ("，可见范围已设为“仅自己可见”" if visibility == "private" else "，可见范围为公开")
+                + "。请检查图片顺序、标题和正文，并手动点击发布。"
+            ),
         )
 
 
@@ -1406,6 +1419,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json_body()
             title = payload.get("title")
             content = payload.get("content")
+            visibility = payload.get("visibility", "public")
+            if visibility not in {"public", "private"}:
+                raise ValueError("可见范围只能是 public 或 private。")
             if not isinstance(title, str) or not title.strip() or len(title.strip()) > 20:
                 raise ValueError("标题不能为空且不能超过 20 个字符。")
             if not isinstance(content, str) or not content.strip() or len(content.strip()) > 1000:
@@ -1425,7 +1441,7 @@ class Handler(BaseHTTPRequestHandler):
             publisher_state.update(status="starting", message="正在启动小红书创作者编辑页。")
         worker = threading.Thread(
             target=run_publisher_browser,
-            args=(image_paths, title.strip(), content.strip()),
+            args=(image_paths, title.strip(), content.strip(), visibility),
             daemon=True,
         )
         worker.start()
