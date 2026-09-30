@@ -9,11 +9,11 @@ MISTRAL_MODEL = "ministral-14b-2512"
 MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
 MAX_ATTEMPTS = 4
 SITE_LINE = "想知道自己几分？去 yanzumeixue.com 测"
-# 字数只算狠话部分，不含末尾自动追加的网址推荐行。
-ROAST_MIN_CHARS = 50
-ROAST_MAX_CHARS = 70
+# 字数只算正文部分，不含末尾自动追加的网址推荐行。
+BODY_MIN_CHARS = 100
+BODY_MAX_CHARS = 150
 # 给模型的目标区间比硬性区间窄一些，留出误差余量。
-ROAST_TARGET = (ROAST_MIN_CHARS + 5, ROAST_MAX_CHARS - 5)
+BODY_TARGET = (BODY_MIN_CHARS + 10, BODY_MAX_CHARS - 10)
 
 
 def generate_copywriting(
@@ -26,8 +26,8 @@ def generate_copywriting(
     extra = f"\n补充要求：{creator_prompt.strip()}" if creator_prompt.strip() else ""
     prompt = (
         f"为小红书{topic}图文写文案。"
-        f"正文用极端化语言写三句狠话（下结论、打比喻、补刀），每句换行，共 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 字。"
-        "不带脏字和歧视，不用 Markdown，不写网址。"
+        f"正文分 2-3 段，段落之间换行，共 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。"
+        "不用 Markdown，不写网址。"
         f"{extra}\n"
         '只返回 JSON：{"title":"标题（≤20字）","content":"正文"}'
     )
@@ -37,21 +37,21 @@ def generate_copywriting(
             return _request_copywriting(api_key, prompt)
         except CopyLengthOutOfRange as exc:
             last_error = exc
-            adjust = "更短" if exc.roast_length > ROAST_MAX_CHARS else "更长、更饱满"
+            adjust = "更短" if exc.body_length > BODY_MAX_CHARS else "更长、更饱满"
             prompt += (
-                f"\n\n上一次正文只有狠话部分就 {exc.roast_length} 字，不符合要求，请重写得{adjust}，"
-                f"严格控制在 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 字。"
+                f"\n\n上一次正文 {exc.body_length} 字，不符合要求，请重写得{adjust}，"
+                f"严格控制在 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。"
             )
     assert last_error is not None
     raise last_error
 
 
 class CopyLengthOutOfRange(RuntimeError):
-    def __init__(self, roast_length: int) -> None:
+    def __init__(self, body_length: int) -> None:
         super().__init__(
-            f"生成正文 {roast_length} 字（不含网址推荐），不在 {ROAST_MIN_CHARS}-{ROAST_MAX_CHARS} 字范围内，请重试。"
+            f"生成正文 {body_length} 字（不含网址推荐），不在 {BODY_MIN_CHARS}-{BODY_MAX_CHARS} 字范围内，请重试。"
         )
-        self.roast_length = roast_length
+        self.body_length = body_length
 
 
 def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
@@ -67,12 +67,12 @@ def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "你是毒舌犀利、一针见血的小红书颜值点评文案编辑，敢说狠话但不带脏字、不搞歧视。",
+                        "content": "你是小红书颜值话题的文案编辑。",
                     },
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.7,
-                "max_tokens": 300,
+                "max_tokens": 600,
                 "response_format": {"type": "json_object"},
             },
             timeout=90,
@@ -102,23 +102,23 @@ def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
     if not title or len(title) > 20:
         raise RuntimeError("生成标题为空或超过 20 个字符，请调整要求后重试。")
     # 模型偶尔会自己写推荐语，统一去掉后再追加固定推荐行。
-    roast = "\n".join(line for line in content.splitlines() if "yanzumeixue" not in line).strip()
-    if not roast:
+    body = "\n".join(line for line in content.splitlines() if "yanzumeixue" not in line).strip()
+    if not body:
         raise RuntimeError("生成正文为空，请调整要求后重试。")
-    if len(roast) > ROAST_MAX_CHARS:
-        roast = _trim_to_sentence(roast) or roast
-    if not ROAST_MIN_CHARS <= len(roast) <= ROAST_MAX_CHARS:
-        raise CopyLengthOutOfRange(len(roast))
-    return {"title": title, "content": f"{roast}\n{SITE_LINE}"}
+    if len(body) > BODY_MAX_CHARS:
+        body = _trim_to_sentence(body) or body
+    if not BODY_MIN_CHARS <= len(body) <= BODY_MAX_CHARS:
+        raise CopyLengthOutOfRange(len(body))
+    return {"title": title, "content": f"{body}\n{SITE_LINE}"}
 
 
-def _trim_to_sentence(roast: str) -> str | None:
+def _trim_to_sentence(body: str) -> str | None:
     """模型常常略超字数：在不超上限的最后一个句末标点处截断，截断后仍需满足下限。"""
-    cut = max(roast.rfind(mark, 0, ROAST_MAX_CHARS) for mark in "。！？!?…")
+    cut = max(body.rfind(mark, 0, BODY_MAX_CHARS) for mark in "。！？!?…")
     if cut == -1:
         return None
-    trimmed = roast[: cut + 1].strip()
-    return trimmed if len(trimmed) >= ROAST_MIN_CHARS else None
+    trimmed = body[: cut + 1].strip()
+    return trimmed if len(trimmed) >= BODY_MIN_CHARS else None
 
 
 def _first_text(result: dict[str, object], keys: tuple[str, ...]) -> str | None:
