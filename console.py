@@ -7,6 +7,7 @@ import html
 import json
 import mimetypes
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -187,6 +188,10 @@ PAGE = r"""<!doctype html>
     .item-action:disabled { opacity:.55; cursor:wait; }
     #image-preview { width:min(92vw,1000px); max-width:none; max-height:90vh; padding:16px; border:1px solid #ccd3d8; border-radius:4px; background:#fff; box-shadow:0 18px 70px rgba(0,0,0,.35); }
     #image-preview::backdrop { background:rgba(12,17,21,.72); }
+    #confirm-dialog { width:min(92vw,440px); padding:20px; border:1px solid #ccd3d8; border-radius:6px; background:#fff; box-shadow:0 18px 70px rgba(0,0,0,.35); }
+    #confirm-dialog::backdrop { background:rgba(12,17,21,.55); }
+    #confirm-message { margin:0 0 18px; white-space:pre-wrap; overflow-wrap:anywhere; color:#24292d; line-height:1.6; }
+    .confirm-actions { display:flex; justify-content:flex-end; gap:10px; }
     #preview-image { display:block; max-width:100%; max-height:calc(90vh - 90px); margin:0 auto; object-fit:contain; }
     .preview-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
     #preview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -329,20 +334,13 @@ PAGE = r"""<!doctype html>
         <p>每次从所选文件夹随机抽图、自动写文案并<strong>直接点击发布</strong>，然后按间隔循环。</p>
         <div class="warning">开启后会真实发到你的小红书账号上，不再经过人工审核。建议先设为“仅自己可见”试跑一篇；间隔太短可能触发平台限流。</div>
         <div class="field">
-          <label for="auto-mode">选择类型</label>
-          <select id="auto-mode">
-            <option value="comparison">63 种外貌特征：高低对比</option>
-            <option value="topic">自定义话题文件夹：自由写文案</option>
-          </select>
-        </div>
-        <div class="field">
           <label for="auto-folder">图片文件夹</label>
           <select id="auto-folder"></select>
         </div>
         <div class="field">
           <label for="auto-count">每篇挑选数量</label>
           <input id="auto-count" type="number" min="1" max="8" value="3">
-          <p class="help" id="auto-count-help"></p>
+          <p class="help">外貌特征文件夹：“数值高”和“数值低”各抽此数量；话题文件夹：共抽此数量。最多 8 张，最后会附加推广图。</p>
         </div>
         <div class="field">
           <label for="auto-prompt">给AI的写作要求</label>
@@ -411,6 +409,15 @@ PAGE = r"""<!doctype html>
         <span class="help" id="preview-path"></span>
         <button type="button" class="item-action danger" id="preview-delete">删除照片</button>
       </div>
+    </dialog>
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <p id="confirm-message"></p>
+        <div class="confirm-actions">
+          <button type="submit" class="item-action" value="cancel">取消</button>
+          <button type="submit" class="item-action" id="confirm-ok" value="ok">确定</button>
+        </div>
+      </form>
     </dialog>
     <section id="crawler-page">
     <form id="crawl-form">
@@ -500,6 +507,19 @@ const libraryStatus = document.getElementById("library-status");
 const libraryBreadcrumb = document.getElementById("library-breadcrumb");
 const libraryBack = document.getElementById("library-back");
 const previewDialog = document.getElementById("image-preview");
+// 用页面内对话框代替 window.confirm：部分内嵌浏览器会直接把 confirm 当成“取消”。
+function askConfirm(message, {okText = "确定", danger = false} = {}) {
+  const dialog = document.getElementById("confirm-dialog");
+  const okButton = document.getElementById("confirm-ok");
+  document.getElementById("confirm-message").textContent = message;
+  okButton.textContent = okText;
+  okButton.classList.toggle("danger", danger);
+  dialog.returnValue = "cancel";
+  dialog.showModal();
+  return new Promise(resolve => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), {once:true});
+  });
+}
 const previewImage = document.getElementById("preview-image");
 let currentLibraryPath = "";
 let previewedImagePath = "";
@@ -794,7 +814,7 @@ async function loadLibrary(path = currentLibraryPath) {
 }
 async function deleteLibraryItem(path, kind) {
   const target = kind === "folder" ? "整个文件夹及其全部内容" : "这张图片";
-  if (!confirm(`确定永久删除${target}吗？\n\n${path}`)) return;
+  if (!await askConfirm(`确定永久删除${target}吗？\n\n${path}`, {okText:"删除", danger:true})) return;
   try {
     const response = await fetch("/api/manage/delete", {
       method:"POST",
@@ -962,7 +982,7 @@ async function loadPublisherFolders() {
     if (!response.ok) throw new Error(data.error || "读取文件夹失败");
     publisherFolders = data.folders;
     updatePublisherMode();
-    updateAutoMode();
+    updateAutoFolders();
   } catch (error) {
     document.getElementById("publisher-state").textContent = `读取图片文件夹失败：${error.message}`;
   }
@@ -1095,24 +1115,20 @@ function showPublisherView(auto) {
 }
 document.getElementById("show-publisher-manual").addEventListener("click", () => showPublisherView(false));
 document.getElementById("show-publisher-auto").addEventListener("click", () => showPublisherView(true));
-function updateAutoMode() {
-  const mode = document.getElementById("auto-mode").value;
-  const countInput = document.getElementById("auto-count");
-  countInput.max = mode === "comparison" ? "8" : "17";
-  if (Number(countInput.value) > Number(countInput.max)) countInput.value = countInput.max;
-  document.getElementById("auto-count-help").textContent = mode === "comparison"
-    ? "“数值高”和“数值低”两边各随机抽取此数量；最多 8 张/组。最后会附加推广图。"
-    : "从所选话题文件夹中随机抽取；最多 17 张。最后会附加推广图。";
+const AUTO_RANDOM_FOLDER = "__random__";
+function updateAutoFolders() {
   const select = document.getElementById("auto-folder");
   const previous = select.value;
-  const available = publisherFolders.filter(folder => (mode === "comparison") === folder.is_metric);
-  select.replaceChildren(new Option(available.length ? "请选择文件夹" : "没有可用的文件夹", ""));
+  const available = publisherFolders;
+  select.replaceChildren(available.length
+    ? new Option(`每篇随机抽取一个文件夹（${available.length} 个可选）`, AUTO_RANDOM_FOLDER)
+    : new Option("没有可用的文件夹", ""));
   for (const folder of available) {
-    select.append(new Option(`${folder.name} · ${folder.image_count} 张照片`, folder.path));
+    const kind = folder.is_metric ? "外貌特征" : "话题";
+    select.append(new Option(`${folder.name} · ${kind} · ${folder.image_count} 张照片`, folder.path));
   }
-  if (available.some(folder => folder.path === previous)) select.value = previous;
+  if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
 }
-document.getElementById("auto-mode").addEventListener("change", updateAutoMode);
 const WHEEL_ROW = 36;
 function buildWheel(id, max, initial) {
   const wheel = document.getElementById(id);
@@ -1193,7 +1209,7 @@ document.getElementById("show-publisher").addEventListener("click", () => {
   requestAnimationFrame(syncWheels);
   pollAutoStatus();
 });
-document.getElementById("auto-start").addEventListener("click", async event => {
+document.getElementById("auto-start").addEventListener("click", async () => {
   const folder = document.getElementById("auto-folder").value;
   const state = document.getElementById("auto-state");
   if (!folder) {
@@ -1206,16 +1222,16 @@ document.getElementById("auto-start").addEventListener("click", async event => {
   }
   const visibility = document.getElementById("auto-visibility").value;
   const target = Number(document.getElementById("auto-target").value) || 0;
-  const confirmText = `确认开始全自动发布？\n可见范围：${visibility === "private" ? "仅自己可见" : "公开"}\n${document.getElementById("auto-interval-help").textContent}\n篇数：${target || "不限"}\n文案和图片不会再经过人工审核。`;
-  if (!confirm(confirmText)) return;
-  event.currentTarget.disabled = true;
+  const folderText = folder === AUTO_RANDOM_FOLDER ? "每篇随机抽取" : folder;
+  const confirmText = `确认开始全自动发布？\n文件夹：${folderText}\n可见范围：${visibility === "private" ? "仅自己可见" : "公开"}\n${document.getElementById("auto-interval-help").textContent}\n篇数：${target || "不限"}\n文案和图片不会再经过人工审核。`;
+  if (!await askConfirm(confirmText, {okText:"开始发布"})) return;
+  document.getElementById("auto-start").disabled = true;
   try {
     const response = await fetch("/api/auto/start", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        mode:document.getElementById("auto-mode").value,
-        folder,
+        folder:folder === AUTO_RANDOM_FOLDER ? null : folder,
         count:Number(document.getElementById("auto-count").value),
         prompt:document.getElementById("auto-prompt").value,
         visibility,
@@ -1373,6 +1389,58 @@ def validate_publisher_folder(mode: Any, folder: Any) -> Path:
     if (mode == "comparison") != is_metric:
         raise ValueError("所选图片文件夹与当前模式不匹配，请重新选择。")
     return selected_folder
+
+
+def scan_publisher_folders() -> list[dict[str, Any]]:
+    """列出可用于发布的图片文件夹；min_group_count 是每组（数值高/低或整个话题）最少的图片数。"""
+    folders: list[dict[str, Any]] = []
+    for folder in ROOT.iterdir():
+        if not folder.is_dir() or folder.is_symlink() or folder.name.lower() in PROTECTED_DIRS:
+            continue
+        is_metric = folder.name in METRIC_NAMES
+        if is_metric:
+            high_dir = folder / "数值高"
+            low_dir = folder / "数值低"
+            if high_dir.is_symlink() or low_dir.is_symlink():
+                continue
+            high_count = count_managed_images(high_dir) if high_dir.is_dir() else 0
+            low_count = count_managed_images(low_dir) if low_dir.is_dir() else 0
+            if not high_count or not low_count:
+                continue
+            image_count = high_count + low_count
+            min_group_count = min(high_count, low_count)
+        else:
+            image_count = count_managed_images(folder)
+            if not image_count:
+                continue
+            min_group_count = image_count
+        folders.append({
+            "name": folder.name,
+            "path": folder.name,
+            "image_count": image_count,
+            "min_group_count": min_group_count,
+            "is_metric": is_metric,
+        })
+    return sorted(folders, key=lambda item: item["name"].casefold())
+
+
+def folder_mode(name: str) -> str:
+    """外貌特征文件夹按高低对比发布，其余按话题发布。"""
+    return "comparison" if name in METRIC_NAMES else "topic"
+
+
+def random_publisher_folder(count: int, previous: str | None = None) -> str:
+    """每篇随机抽一个图片数量足够的文件夹；有多个可选时避免和上一篇重复。"""
+    candidates = [
+        folder["name"]
+        for folder in scan_publisher_folders()
+        if folder["min_group_count"] >= count
+    ]
+    if not candidates:
+        raise RuntimeError(f"没有图片数量足够（每组至少 {count} 张）的文件夹可供随机抽取。")
+    if len(candidates) > 1 and previous in candidates:
+        candidates.remove(previous)
+    return random.choice(candidates)
 
 
 def count_managed_images(path: Path) -> int:
@@ -1579,6 +1647,7 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
     failures = 0
     published = 0
     target = config["target"]
+    folder = None
     while not auto_stop_event.is_set():
         round_no = published + 1
         driver = None
@@ -1587,9 +1656,12 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
                 api_key = mistral_api_key
             if not api_key:
                 raise RuntimeError("未绑定 Mistral API Key。")
-            auto_log(f"第 {round_no} 篇：正在抽图并生成文案。", next_at=None)
-            images, _ = build_post_images(ROOT, config["mode"], config["folder"], config["count"])
-            copy = generate_copywriting(api_key, config["mode"], config["folder"], config["prompt"])
+            # folder 为 None 表示“每篇随机抽取一个文件夹”，每一轮都重新抽。
+            folder = config["folder"] or random_publisher_folder(config["count"], folder)
+            mode = folder_mode(folder)
+            auto_log(f"第 {round_no} 篇：文件夹「{folder}」，正在抽图并生成文案。", next_at=None)
+            images, _ = build_post_images(ROOT, mode, folder, config["count"])
+            copy = generate_copywriting(api_key, mode, folder, config["prompt"])
             auto_log(f"第 {round_no} 篇：文案《{copy['title']}》已生成，正在打开小红书。")
 
             def update_status(message: str) -> None:
@@ -1805,40 +1877,12 @@ class Handler(BaseHTTPRequestHandler):
         return payload
 
     def list_publisher_folders(self) -> None:
-        folders: list[dict[str, Any]] = []
         try:
-            for folder in ROOT.iterdir():
-                if (
-                    not folder.is_dir()
-                    or folder.is_symlink()
-                    or folder.name.lower() in PROTECTED_DIRS
-                ):
-                    continue
-                is_metric = folder.name in METRIC_NAMES
-                if is_metric:
-                    high_dir = folder / "数值高"
-                    low_dir = folder / "数值低"
-                    if high_dir.is_symlink() or low_dir.is_symlink():
-                        continue
-                    high_count = count_managed_images(high_dir) if high_dir.is_dir() else 0
-                    low_count = count_managed_images(low_dir) if low_dir.is_dir() else 0
-                    if not high_count or not low_count:
-                        continue
-                    image_count = high_count + low_count
-                else:
-                    image_count = count_managed_images(folder)
-                    if not image_count:
-                        continue
-                folders.append({
-                    "name": folder.name,
-                    "path": folder.name,
-                    "image_count": image_count,
-                    "is_metric": is_metric,
-                })
+            folders = scan_publisher_folders()
         except OSError as exc:
             self.send_json({"error": f"读取图片文件夹失败：{exc}"}, 500)
             return
-        self.send_json({"folders": sorted(folders, key=lambda item: item["name"].casefold())})
+        self.send_json({"folders": folders})
 
     def prepare_publisher_draft(self) -> None:
         global publisher_draft
@@ -1953,14 +1997,19 @@ class Handler(BaseHTTPRequestHandler):
     def start_auto_publisher(self) -> None:
         try:
             payload = self.read_json_body()
-            selected_folder = validate_publisher_folder(payload.get("mode"), payload.get("folder"))
+            folder = payload.get("folder")
+            random_folder = folder is None
+            if not random_folder:
+                if not isinstance(folder, str):
+                    raise ValueError("请选择有效的图片文件夹。")
+                selected_folder = validate_publisher_folder(folder_mode(folder), folder)
             count = payload.get("count")
             prompt = payload.get("prompt", "")
             visibility = payload.get("visibility", "public")
             interval = payload.get("interval")
             target = payload.get("target", 0)
-            if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                raise ValueError("挑选数量必须是正整数。")
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 8:
+                raise ValueError("每篇挑选数量需在 1 到 8 之间。")
             if not isinstance(prompt, str) or len(prompt) > 2000:
                 raise ValueError("创作者 Prompt 不能超过 2000 个字符。")
             if visibility not in {"public", "private"}:
@@ -1982,8 +2031,7 @@ class Handler(BaseHTTPRequestHandler):
             auto_stop_event.clear()
             auto_state.update(status="running", published=0, target=target, next_at=None, log=[])
         config = {
-            "mode": payload["mode"],
-            "folder": selected_folder.name,
+            "folder": None if random_folder else selected_folder.name,
             "count": count,
             "prompt": prompt,
             "visibility": visibility,
