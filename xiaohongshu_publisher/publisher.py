@@ -199,6 +199,40 @@ def _click_upload_image_mode(driver: uc.Chrome) -> bool:
     return False
 
 
+def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> None:
+    """全自动模式：等图片上传完成后点击“发布”，并等待发布成功的信号。"""
+    status_callback("正在等待图片上传完成。")
+    WebDriverWait(driver, 180).until(
+        lambda d: not any(
+            element.is_displayed()
+            for element in d.find_elements(By.XPATH, "//*[contains(text(), '上传中')]")
+        )
+    )
+    try:
+        button = WebDriverWait(driver, 60).until(_ready_publish_button)
+    except TimeoutException as exc:
+        raise RuntimeError("未找到可点击的“发布”按钮。") from exc
+    time.sleep(2)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+    status_callback("正在点击“发布”。")
+    if not _safe_click(driver, button):
+        raise RuntimeError("点击“发布”按钮失败。")
+    try:
+        WebDriverWait(driver, 60).until(
+            lambda d: "published=true" in d.current_url or bool(_visible_text_elements(d, "发布成功"))
+        )
+    except TimeoutException as exc:
+        raise RuntimeError("已点击“发布”，但 60 秒内未看到发布成功提示，请到小红书检查。") from exc
+
+
+def _ready_publish_button(driver: uc.Chrome):
+    for element in driver.find_elements(By.XPATH, "//button[normalize-space(.)='发布']"):
+        disabled = "disabled" in (element.get_attribute("class") or "")
+        if element.is_displayed() and element.is_enabled() and not disabled:
+            return element
+    return False
+
+
 PRIVATE_LABEL = "仅自己可见"
 PUBLIC_LABEL = "公开可见"
 

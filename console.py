@@ -11,16 +11,18 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from xiaohongshu_publisher.copywriter import generate_copywriting
-from xiaohongshu_publisher.image_loader import build_post_images
+from xiaohongshu_publisher.image_loader import build_post_images, candidate_key, list_candidate_images
 from xiaohongshu_publisher.publisher import (
     PublisherEditorNotFound,
     PublisherManualIntervention,
+    click_publish,
     open_filled_draft,
 )
 
@@ -56,6 +58,17 @@ publisher_lock = threading.Lock()
 publisher_state: dict[str, str] = {"status": "idle", "message": ""}
 publisher_draft: dict[str, Any] | None = None
 publisher_driver: Any = None
+AUTO_MIN_INTERVAL_SECONDS = 60
+AUTO_MAX_CONSECUTIVE_FAILURES = 3
+auto_stop_event = threading.Event()
+auto_state: dict[str, Any] = {
+    "status": "idle",
+    "message": "",
+    "published": 0,
+    "target": 0,
+    "next_at": None,
+    "log": [],
+}
 
 
 def load_metric_names() -> list[str]:
@@ -171,6 +184,24 @@ PAGE = r"""<!doctype html>
     .publisher-image { min-width:0; padding:7px; border:1px solid #d9dddf; background:#fafbfb; }
     .publisher-image img { width:100%; height:120px; object-fit:cover; }
     .publisher-image span { display:block; overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    .picker-group h3 { margin:14px 0 8px; font-size:15px; }
+    .picker-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px; max-height:420px; overflow:auto; }
+    .picker-item { position:relative; padding:0; border:2px solid transparent; background:#fafbfb; cursor:pointer; }
+    .picker-item img { display:block; width:100%; height:96px; object-fit:cover; }
+    .picker-item.selected { border-color:#245b7c; }
+    .picker-item .picker-order { position:absolute; top:4px; right:4px; min-width:22px; height:22px; border-radius:11px; background:#245b7c; color:#fff; font-size:12px; line-height:22px; text-align:center; }
+    .field-label { display:block; margin-bottom:8px; color:#24292d; font-weight:650; }
+    .wheel-picker { position:relative; display:flex; gap:4px; width:max-content; padding:0 12px; background:#1c1c1e; border-radius:14px; user-select:none; }
+    .wheel-column { position:relative; display:flex; align-items:center; }
+    .wheel { width:64px; height:180px; overflow-y:scroll; scroll-snap-type:y mandatory; scrollbar-width:none; padding:72px 0; box-sizing:border-box; outline:none;
+      -webkit-mask-image:linear-gradient(transparent, #000 35%, #000 65%, transparent); mask-image:linear-gradient(transparent, #000 35%, #000 65%, transparent); }
+    .wheel::-webkit-scrollbar { display:none; }
+    .wheel div { height:36px; line-height:36px; text-align:right; padding-right:6px; color:#f5f5f7; font-size:22px; font-variant-numeric:tabular-nums; scroll-snap-align:center; cursor:pointer; }
+    .wheel:focus-visible { box-shadow:inset 0 0 0 2px #0a84ff; border-radius:10px; }
+    .wheel-unit { width:44px; color:#f5f5f7; font-size:16px; font-weight:600; position:relative; z-index:1; }
+    .wheel-highlight { position:absolute; left:8px; right:8px; top:72px; height:36px; border-radius:8px; background:rgba(255,255,255,.12); pointer-events:none; }
+    #auto-state { min-height:24px; color:#245b7c; font-weight:650; }
+    #auto-log { max-height:220px; overflow:auto; margin:8px 0 0; padding-left:18px; color:#555d63; font-size:13px; }
     #publisher-state { min-height:24px; color:#245b7c; font-weight:650; }
     .publisher-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
     [hidden] { display:none!important; }
@@ -222,6 +253,17 @@ PAGE = r"""<!doctype html>
           <p class="help" id="publisher-folder-help"></p>
         </div>
         <div class="field">
+          <label for="publisher-pick-mode">选图方式</label>
+          <select id="publisher-pick-mode">
+            <option value="random">随机抽取</option>
+            <option value="manual">自己筛选</option>
+          </select>
+        </div>
+        <div class="field" id="publisher-picker" hidden>
+          <p class="help" id="publisher-picker-help">点击图片勾选，按勾选顺序排列。</p>
+          <div id="publisher-picker-groups"></div>
+        </div>
+        <div class="field" id="publisher-count-field">
           <label for="publisher-count">挑选数量</label>
           <input id="publisher-count" type="number" min="1" max="8" value="3">
           <p class="help" id="publisher-count-help">“数值高”和“数值低”两边各抽取此数量；最多 8 张/组。最后会附加推广图。</p>
@@ -257,6 +299,44 @@ PAGE = r"""<!doctype html>
           <button type="button" class="submit" id="open-publisher">打开小红书并自动填入草稿</button>
           <button type="button" class="item-action" id="close-publisher" hidden>关闭小红书浏览器</button>
         </div>
+      </section>
+      <section class="panel" id="auto-panel">
+        <h2>全自动文案发布</h2>
+        <p>使用上方的类型、图片文件夹、挑选数量和写作要求，每次随机抽图、自动写文案并<strong>直接点击发布</strong>，然后按间隔循环。</p>
+        <div class="warning">开启后会真实发到你的小红书账号上，不再经过人工审核。建议先设为“仅自己可见”试跑一篇；间隔太短可能触发平台限流。</div>
+        <div class="field">
+          <label for="auto-visibility">谁可以看</label>
+          <select id="auto-visibility">
+            <option value="public">公开（public）</option>
+            <option value="private">仅自己可见（private）</option>
+          </select>
+        </div>
+        <div class="field">
+          <span class="field-label" id="auto-interval-label">发布间隔</span>
+          <div class="wheel-picker" role="group" aria-labelledby="auto-interval-label">
+            <div class="wheel-column">
+              <div class="wheel" id="auto-hours" tabindex="0" role="listbox" aria-label="小时"></div>
+              <span class="wheel-unit">小时</span>
+            </div>
+            <div class="wheel-column">
+              <div class="wheel" id="auto-minutes" tabindex="0" role="listbox" aria-label="分钟"></div>
+              <span class="wheel-unit">分钟</span>
+            </div>
+            <div class="wheel-highlight" aria-hidden="true"></div>
+          </div>
+          <p class="help" id="auto-interval-help"></p>
+        </div>
+        <div class="field">
+          <label for="auto-target">发布篇数</label>
+          <input id="auto-target" type="number" min="0" max="100" value="0">
+          <p class="help">填 0 表示不限，直到手动停止。</p>
+        </div>
+        <div class="publisher-actions">
+          <button type="button" class="submit" id="auto-start">开始自动发布</button>
+          <button type="button" class="item-action" id="auto-stop" hidden>停止自动发布</button>
+        </div>
+        <p id="auto-state" role="status" aria-live="polite">未启动。</p>
+        <ul id="auto-log"></ul>
       </section>
     </section>
     <section id="manager-page" hidden>
@@ -731,6 +811,99 @@ function renderPublisherFolderOptions() {
   document.getElementById("publisher-folder-help").textContent = mode === "comparison"
     ? "只显示含“数值高”和“数值低”两个图片子文件夹的外貌特征。"
     : "只显示普通话题文件夹；指标文件夹会从此列表中排除。";
+  loadPublisherCandidates();
+}
+let publisherSelection = [];
+let publisherCandidateRequest = 0;
+function publisherIsManual() {
+  return document.getElementById("publisher-pick-mode").value === "manual";
+}
+function updatePublisherPickMode() {
+  const manual = publisherIsManual();
+  document.getElementById("publisher-count-field").hidden = manual;
+  document.getElementById("publisher-picker").hidden = !manual;
+  document.getElementById("prepare-publisher").textContent = manual ? "用选中的图片写文案" : "随机选图并写文案";
+  loadPublisherCandidates();
+}
+function renderPickerOrder() {
+  for (const item of document.querySelectorAll("#publisher-picker-groups .picker-item")) {
+    const position = publisherSelection.indexOf(item.dataset.path);
+    item.classList.toggle("selected", position !== -1);
+    item.setAttribute("aria-pressed", String(position !== -1));
+    item.querySelector(".picker-order").hidden = position === -1;
+    item.querySelector(".picker-order").textContent = position + 1;
+  }
+  const counts = [...document.querySelectorAll("#publisher-picker-groups .picker-group")].map(group =>
+    `${group.dataset.name} ${group.querySelectorAll(".picker-item.selected").length} 张`);
+  document.getElementById("publisher-picker-help").textContent =
+    `点击图片勾选，按勾选顺序排列（每组最多 ${publisherGroupLimit()} 张）。已选：${counts.join("，")}`;
+}
+function publisherGroupLimit() {
+  return document.getElementById("publisher-mode").value === "comparison" ? 8 : 17;
+}
+async function loadPublisherCandidates() {
+  const root = document.getElementById("publisher-picker-groups");
+  publisherSelection = [];
+  root.replaceChildren();
+  if (!publisherIsManual()) return;
+  const mode = document.getElementById("publisher-mode").value;
+  const folder = document.getElementById("publisher-folder").value;
+  const help = document.getElementById("publisher-picker-help");
+  if (!folder) {
+    help.textContent = "先选择图片文件夹，再从下面挑图。";
+    return;
+  }
+  const requestId = ++publisherCandidateRequest;
+  help.textContent = "正在读取图片列表…";
+  try {
+    const params = new URLSearchParams({mode, folder});
+    const response = await fetch(`/api/publisher/candidates?${params}`, {cache:"no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取图片列表失败");
+    if (requestId !== publisherCandidateRequest) return;
+    for (const group of data.groups) {
+      const section = document.createElement("div");
+      section.className = "picker-group";
+      section.dataset.name = group.name;
+      const heading = document.createElement("h3");
+      heading.textContent = `${group.name}（${group.images.length} 张）`;
+      const grid = document.createElement("div");
+      grid.className = "picker-grid";
+      for (const image of group.images) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "picker-item";
+        item.dataset.path = image.path;
+        item.title = image.name;
+        const preview = document.createElement("img");
+        preview.loading = "lazy";
+        preview.alt = image.name;
+        preview.src = `/api/publisher/candidate-image?${new URLSearchParams({mode, folder, path:image.path})}`;
+        const order = document.createElement("span");
+        order.className = "picker-order";
+        order.hidden = true;
+        item.append(preview, order);
+        item.addEventListener("click", () => {
+          const position = publisherSelection.indexOf(image.path);
+          if (position !== -1) {
+            publisherSelection.splice(position, 1);
+          } else if (section.querySelectorAll(".picker-item.selected").length >= publisherGroupLimit()) {
+            document.getElementById("publisher-state").textContent = `“${group.name}”最多选择 ${publisherGroupLimit()} 张。`;
+            return;
+          } else {
+            publisherSelection.push(image.path);
+          }
+          renderPickerOrder();
+        });
+        grid.append(item);
+      }
+      section.append(heading, grid);
+      root.append(section);
+    }
+    renderPickerOrder();
+  } catch (error) {
+    if (requestId === publisherCandidateRequest) help.textContent = `读取图片列表失败：${error.message}`;
+  }
 }
 async function loadPublisherFolders() {
   const select = document.getElementById("publisher-folder");
@@ -765,7 +938,7 @@ function renderPublisherPreview(data) {
     imageList.append(card);
   }
   document.getElementById("publisher-image-summary").textContent =
-    `${data.images.length - 1} 张抽取图片 + 最后一张彦祖美学推广图`;
+    `${data.images.length - 1} 张素材图片 + 最后一张彦祖美学推广图`;
   document.getElementById("publisher-title").value = data.copy.title;
   document.getElementById("publisher-content").value = data.copy.content;
   document.getElementById("publisher-state").textContent = "文案和图片已准备好。请审核并可编辑后，再打开发布编辑页。";
@@ -780,9 +953,16 @@ async function preparePublisherDraft() {
     document.getElementById("publisher-state").textContent = "请先选择图片文件夹。";
     return;
   }
+  const manual = publisherIsManual();
+  if (manual && !publisherSelection.length) {
+    document.getElementById("publisher-state").textContent = "请先在下方勾选要发布的图片。";
+    return;
+  }
   button.disabled = true;
   document.getElementById("publisher-preview-panel").hidden = true;
-  document.getElementById("publisher-state").textContent = "正在随机抽图并请求 Ministral 14B 生成文案…";
+  document.getElementById("publisher-state").textContent = manual
+    ? "正在用选中的图片请求 Ministral 14B 生成文案…"
+    : "正在随机抽图并请求 Ministral 14B 生成文案…";
   try {
     const response = await fetch("/api/publisher/prepare", {
       method:"POST",
@@ -791,6 +971,7 @@ async function preparePublisherDraft() {
         mode,
         folder,
         count,
+        selected:manual ? publisherSelection : null,
         prompt:document.getElementById("publisher-prompt").value
       })
     });
@@ -804,6 +985,8 @@ async function preparePublisherDraft() {
   }
 }
 document.getElementById("publisher-mode").addEventListener("change", updatePublisherMode);
+document.getElementById("publisher-folder").addEventListener("change", loadPublisherCandidates);
+document.getElementById("publisher-pick-mode").addEventListener("change", updatePublisherPickMode);
 document.getElementById("prepare-publisher").addEventListener("click", preparePublisherDraft);
 document.getElementById("regenerate-publisher").addEventListener("click", preparePublisherDraft);
 document.getElementById("open-publisher").addEventListener("click", async event => {
@@ -842,6 +1025,135 @@ async function pollPublisherStatus() {
     document.getElementById("publisher-state").textContent = `发布状态读取失败：${error.message}`;
   }
 }
+const WHEEL_ROW = 36;
+function buildWheel(id, max, initial) {
+  const wheel = document.getElementById(id);
+  for (let value = 0; value <= max; value += 1) {
+    const row = document.createElement("div");
+    row.role = "option";
+    row.textContent = value;
+    row.addEventListener("click", () => wheel.scrollTo({top:value * WHEEL_ROW, behavior:"smooth"}));
+    wheel.append(row);
+  }
+  wheel.addEventListener("keydown", event => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const next = Math.min(max, Math.max(0, wheelValue(wheel) + (event.key === "ArrowDown" ? 1 : -1)));
+    wheel.scrollTo({top:next * WHEEL_ROW, behavior:"smooth"});
+  });
+  // 值记在 data-value 上：面板隐藏时 scrollTop 恒为 0，不能直接读取。
+  wheel.dataset.value = initial;
+  let settle = null;
+  wheel.addEventListener("scroll", () => {
+    if (!wheel.clientHeight) return;
+    clearTimeout(settle);
+    settle = setTimeout(() => {
+      wheel.dataset.value = Math.min(max, Math.round(wheel.scrollTop / WHEEL_ROW));
+      updateAutoIntervalHelp();
+    }, 120);
+  });
+  return wheel;
+}
+function wheelValue(wheel) {
+  return Number(wheel.dataset.value);
+}
+function syncWheels() {
+  for (const wheel of [autoHours, autoMinutes]) wheel.scrollTop = wheelValue(wheel) * WHEEL_ROW;
+}
+const autoHours = buildWheel("auto-hours", 23, 1);
+const autoMinutes = buildWheel("auto-minutes", 59, 0);
+updateAutoIntervalHelp();
+function autoIntervalSeconds() {
+  return wheelValue(autoHours) * 3600 + wheelValue(autoMinutes) * 60;
+}
+function updateAutoIntervalHelp() {
+  const hours = wheelValue(autoHours);
+  const minutes = wheelValue(autoMinutes);
+  for (const [wheel, value] of [[autoHours, hours], [autoMinutes, minutes]]) {
+    [...wheel.children].forEach((row, index) => row.setAttribute("aria-selected", String(index === value)));
+  }
+  const text = autoIntervalSeconds() < 60
+    ? "间隔至少 1 分钟。"
+    : `每 ${hours ? `${hours} 小时 ` : ""}${minutes ? `${minutes} 分钟` : ""}发布一篇。`;
+  document.getElementById("auto-interval-help").textContent = text;
+}
+let autoTimer = null;
+function renderAutoStatus(data) {
+  const running = data.status === "running";
+  document.getElementById("auto-start").hidden = running;
+  document.getElementById("auto-stop").hidden = !running;
+  const progress = data.target ? `（${data.published}/${data.target}）` : (running ? `（已发 ${data.published} 篇）` : "");
+  document.getElementById("auto-state").textContent = `${data.message || "未启动。"}${progress}`;
+  const log = document.getElementById("auto-log");
+  log.replaceChildren(...data.log.map(line => {
+    const item = document.createElement("li");
+    item.textContent = line;
+    return item;
+  }));
+  clearTimeout(autoTimer);
+  if (running) autoTimer = setTimeout(pollAutoStatus, 3000);
+}
+async function pollAutoStatus() {
+  try {
+    const response = await fetch("/api/auto/status", {cache:"no-store"});
+    renderAutoStatus(await response.json());
+  } catch (error) {
+    document.getElementById("auto-state").textContent = `自动发布状态读取失败：${error.message}`;
+  }
+}
+document.getElementById("show-publisher").addEventListener("click", () => {
+  requestAnimationFrame(syncWheels);
+  pollAutoStatus();
+});
+document.getElementById("auto-start").addEventListener("click", async event => {
+  const folder = document.getElementById("publisher-folder").value;
+  const state = document.getElementById("auto-state");
+  if (!folder) {
+    state.textContent = "请先在上方选择图片文件夹。";
+    return;
+  }
+  if (autoIntervalSeconds() < 60) {
+    state.textContent = "发布间隔至少 1 分钟。";
+    return;
+  }
+  const visibility = document.getElementById("auto-visibility").value;
+  const target = Number(document.getElementById("auto-target").value) || 0;
+  const confirmText = `确认开始全自动发布？\n可见范围：${visibility === "private" ? "仅自己可见" : "公开"}\n${document.getElementById("auto-interval-help").textContent}\n篇数：${target || "不限"}\n文案和图片不会再经过人工审核。`;
+  if (!confirm(confirmText)) return;
+  event.currentTarget.disabled = true;
+  try {
+    const response = await fetch("/api/auto/start", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        mode:document.getElementById("publisher-mode").value,
+        folder,
+        count:Number(document.getElementById("publisher-count").value),
+        prompt:document.getElementById("publisher-prompt").value,
+        visibility,
+        interval:autoIntervalSeconds(),
+        target
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法启动自动发布");
+    await pollAutoStatus();
+  } catch (error) {
+    state.textContent = `启动失败：${error.message}`;
+  } finally {
+    document.getElementById("auto-start").disabled = false;
+  }
+});
+document.getElementById("auto-stop").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/auto/stop", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法停止");
+    await pollAutoStatus();
+  } catch (error) {
+    document.getElementById("auto-state").textContent = `停止失败：${error.message}`;
+  }
+});
 document.getElementById("close-publisher").addEventListener("click", async () => {
   try {
     const response = await fetch("/api/publisher/close", {
@@ -951,6 +1263,28 @@ def list_managed_directory(relative_path: str) -> dict[str, Any]:
         "folders": sorted(folders, key=lambda item: item["name"].casefold()),
         "images": sorted(images, key=lambda item: item["name"].casefold()),
     }
+
+
+def validate_publisher_folder(mode: Any, folder: Any) -> Path:
+    if mode not in {"comparison", "topic"}:
+        raise ValueError("请选择有效的发布素材模式。")
+    if not isinstance(folder, str) or not folder.strip() or len(folder) > 500:
+        raise ValueError("请选择有效的图片文件夹。")
+    requested_folder = ROOT / folder
+    if requested_folder.is_symlink():
+        raise ValueError("不能使用符号链接作为图片文件夹。")
+    selected_folder = requested_folder.resolve()
+    if (
+        selected_folder.parent != ROOT
+        or selected_folder.is_symlink()
+        or not selected_folder.is_dir()
+        or selected_folder.name.lower() in PROTECTED_DIRS
+    ):
+        raise ValueError("只能选择项目根目录中可访问的图片文件夹。")
+    is_metric = selected_folder.name in METRIC_NAMES
+    if (mode == "comparison") != is_metric:
+        raise ValueError("所选图片文件夹与当前模式不匹配，请重新选择。")
+    return selected_folder
 
 
 def count_managed_images(path: Path) -> int:
@@ -1109,6 +1443,65 @@ def run_publisher_browser(
         )
 
 
+def auto_log(message: str, **changes: Any) -> None:
+    with publisher_lock:
+        auto_state.update(message=message, **changes)
+        auto_state["log"] = [f"{time.strftime('%H:%M:%S')} {message}", *auto_state["log"]][:50]
+
+
+def run_auto_publisher(config: dict[str, Any]) -> None:
+    """全自动循环：随机抽图 → 生成文案 → 填入草稿 → 点击发布 → 等待间隔。"""
+    failures = 0
+    published = 0
+    target = config["target"]
+    while not auto_stop_event.is_set():
+        round_no = published + 1
+        driver = None
+        try:
+            with job_lock:
+                api_key = mistral_api_key
+            if not api_key:
+                raise RuntimeError("未绑定 Mistral API Key。")
+            auto_log(f"第 {round_no} 篇：正在抽图并生成文案。", next_at=None)
+            images, group_counts = build_post_images(ROOT, config["mode"], config["folder"], config["count"])
+            copy = generate_copywriting(api_key, config["mode"], config["folder"], group_counts, config["prompt"])
+            auto_log(f"第 {round_no} 篇：文案《{copy['title']}》已生成，正在打开小红书。")
+
+            def update_status(message: str) -> None:
+                with publisher_lock:
+                    auto_state["message"] = f"第 {round_no} 篇：{message}"
+
+            driver = open_filled_draft(images, copy["title"], copy["content"], config["visibility"], update_status)
+            click_publish(driver, update_status)
+            published += 1
+            failures = 0
+            auto_log(f"第 {round_no} 篇《{copy['title']}》已发布。", published=published)
+        except Exception as exc:
+            failures += 1
+            # 草稿步骤失败时浏览器挂在异常上，也要关掉，否则下一轮无法复用同一个浏览器配置目录。
+            driver = driver or getattr(exc, "driver", None)
+            auto_log(f"第 {round_no} 篇失败（连续 {failures} 次）：{exc}")
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        if target and published >= target:
+            auto_log(f"已完成全部 {target} 篇，自动发布结束。", status="idle", next_at=None)
+            return
+        if failures >= AUTO_MAX_CONSECUTIVE_FAILURES:
+            auto_log("连续失败次数过多，已停止自动发布，请检查登录状态和素材。", status="error", next_at=None)
+            return
+        next_at = time.time() + config["interval"]
+        with publisher_lock:
+            auto_state["next_at"] = next_at
+            auto_state["message"] = f"已发布 {published} 篇，等待下一篇（{time.strftime('%H:%M', time.localtime(next_at))}）。"
+        if auto_stop_event.wait(config["interval"]):
+            break
+    auto_log(f"已手动停止自动发布，共发布 {published} 篇。", status="idle", next_at=None)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LocalImageCrawler/1.0"
 
@@ -1157,6 +1550,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if request.path == "/api/publisher/image":
             self.send_publisher_image(parse_qs(request.query).get("index", [""])[0])
+            return
+        if request.path == "/api/publisher/candidates":
+            query = parse_qs(request.query)
+            self.list_publisher_candidates(query.get("mode", [""])[0], query.get("folder", [""])[0])
+            return
+        if request.path == "/api/publisher/candidate-image":
+            query = parse_qs(request.query)
+            self.send_publisher_candidate_image(
+                query.get("mode", [""])[0],
+                query.get("folder", [""])[0],
+                query.get("path", [""])[0],
+            )
+            return
+        if request.path == "/api/auto/status":
+            with publisher_lock:
+                snapshot = {**auto_state, "log": list(auto_state["log"])}
+            self.send_json(snapshot)
             return
         if request.path == "/api/publisher/status":
             with publisher_lock:
@@ -1217,6 +1627,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/manage/delete":
             self.delete_library_item()
+            return
+        if self.path in {"/api/auto/start", "/api/auto/stop"}:
+            if not self.is_same_origin_request():
+                self.send_json({"error": "自动发布请求只允许来自当前本机网页。"}, 403)
+                return
+            if self.path == "/api/auto/start":
+                self.start_auto_publisher()
+            else:
+                self.stop_auto_publisher()
             return
         if self.path in {"/api/publisher/prepare", "/api/publisher/launch", "/api/publisher/close"}:
             if not self.is_same_origin_request():
@@ -1314,20 +1733,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("挑选数量必须是整数。")
             if not isinstance(prompt, str) or len(prompt) > 2000:
                 raise ValueError("创作者 Prompt 不能超过 2000 个字符。")
-            requested_folder = ROOT / folder
-            if requested_folder.is_symlink():
-                raise ValueError("不能使用符号链接作为图片文件夹。")
-            selected_folder = requested_folder.resolve()
-            if (
-                selected_folder.parent != ROOT
-                or selected_folder.is_symlink()
-                or not selected_folder.is_dir()
-                or selected_folder.name.lower() in PROTECTED_DIRS
+            selected_images = payload.get("selected")
+            if selected_images is not None and (
+                not isinstance(selected_images, list)
+                or not all(isinstance(item, str) for item in selected_images)
             ):
-                raise ValueError("只能选择项目根目录中可访问的图片文件夹。")
-            is_metric = selected_folder.name in METRIC_NAMES
-            if (mode == "comparison") != is_metric:
-                raise ValueError("所选图片文件夹与当前模式不匹配，请重新选择。")
+                raise ValueError("手动选图列表格式错误。")
+            selected_folder = validate_publisher_folder(mode, folder)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, 400)
             return
@@ -1347,7 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            images, group_counts = build_post_images(ROOT, mode, folder, count)
+            images, group_counts = build_post_images(ROOT, mode, folder, count, selected_images)
         except ValueError as exc:
             with publisher_lock:
                 publisher_state.update(status="error", message=str(exc))
@@ -1398,6 +1810,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "预览图片不存在或草稿已失效。"}, 404)
                 return
             image_path = draft["images"][index]
+        self.send_image_file(image_path, "no-store")
+
+    def send_image_file(self, image_path: Path, cache_control: str) -> None:
         try:
             if not image_path.is_file() or image_path.is_symlink():
                 raise FileNotFoundError("预览图片不存在。")
@@ -1408,10 +1823,100 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(image_path.name)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(payload)
+
+    def start_auto_publisher(self) -> None:
+        try:
+            payload = self.read_json_body()
+            selected_folder = validate_publisher_folder(payload.get("mode"), payload.get("folder"))
+            count = payload.get("count")
+            prompt = payload.get("prompt", "")
+            visibility = payload.get("visibility", "public")
+            interval = payload.get("interval")
+            target = payload.get("target", 0)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                raise ValueError("挑选数量必须是正整数。")
+            if not isinstance(prompt, str) or len(prompt) > 2000:
+                raise ValueError("创作者 Prompt 不能超过 2000 个字符。")
+            if visibility not in {"public", "private"}:
+                raise ValueError("可见范围只能是 public 或 private。")
+            if isinstance(interval, bool) or not isinstance(interval, int) or not AUTO_MIN_INTERVAL_SECONDS <= interval <= 24 * 3600:
+                raise ValueError("发布间隔需在 1 分钟到 24 小时之间。")
+            if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target <= 100:
+                raise ValueError("发布篇数需在 0（不限）到 100 之间。")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        with publisher_lock:
+            if auto_state["status"] == "running":
+                self.send_json({"error": "自动发布已在运行中。"}, 409)
+                return
+            if publisher_driver is not None or publisher_state["status"] in {"starting", "closing"}:
+                self.send_json({"error": "请先关闭手动流程打开的小红书浏览器，再启动自动发布。"}, 409)
+                return
+            auto_stop_event.clear()
+            auto_state.update(status="running", published=0, target=target, next_at=None, log=[])
+        config = {
+            "mode": payload["mode"],
+            "folder": selected_folder.name,
+            "count": count,
+            "prompt": prompt,
+            "visibility": visibility,
+            "interval": interval,
+            "target": target,
+        }
+        auto_log("自动发布已启动。")
+        threading.Thread(target=run_auto_publisher, args=(config,), daemon=True).start()
+        self.send_json({"status": "running"}, 202)
+
+    def stop_auto_publisher(self) -> None:
+        with publisher_lock:
+            running = auto_state["status"] == "running"
+            if running:
+                auto_state["message"] = "正在停止：当前这篇处理完后结束。"
+        auto_stop_event.set()
+        self.send_json({"status": "stopping" if running else "idle"})
+
+    def list_publisher_candidates(self, mode: str, folder: str) -> None:
+        try:
+            selected_folder = validate_publisher_folder(mode, folder)
+            groups = list_candidate_images(ROOT, mode, folder)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        except OSError as exc:
+            self.send_json({"error": f"读取图片列表失败：{exc}"}, 500)
+            return
+        self.send_json({
+            "groups": [
+                {
+                    "name": name,
+                    "images": [
+                        {"path": candidate_key(selected_folder, path), "name": path.name}
+                        for path in images
+                    ],
+                }
+                for name, images in groups.items()
+            ],
+        })
+
+    def send_publisher_candidate_image(self, mode: str, folder: str, key: str) -> None:
+        try:
+            selected_folder = validate_publisher_folder(mode, folder)
+            groups = list_candidate_images(ROOT, mode, folder)
+        except (ValueError, OSError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+            return
+        # 只返回候选列表里的图片，避免通过 path 参数读取任意文件。
+        for images in groups.values():
+            for path in images:
+                if candidate_key(selected_folder, path) == key:
+                    self.send_image_file(path, "private, max-age=300")
+                    return
+        self.send_json({"error": "图片不存在。"}, 404)
 
     def launch_publisher_draft(self) -> None:
         global publisher_driver
@@ -1435,6 +1940,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if publisher_state["status"] in {"generating", "starting", "closing"}:
                 self.send_json({"error": "当前小红书草稿正在处理中。"}, 409)
+                return
+            if auto_state["status"] == "running":
+                self.send_json({"error": "自动发布运行中，会占用小红书浏览器；请先停止自动发布。"}, 409)
                 return
             publisher_draft["copy"] = {"title": title.strip(), "content": content.strip()}
             image_paths = list(publisher_draft["images"])

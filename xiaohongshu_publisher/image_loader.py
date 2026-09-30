@@ -9,6 +9,10 @@ from PIL import Image, ImageDraw, ImageFont
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 PUBLISHER_DIR = Path(__file__).resolve().parent
 PROMO_IMAGE_PATH = PUBLISHER_DIR / "assets" / "yanzumeixue_promo.png"
+COMPARISON_GROUPS = ("数值高", "数值低")
+TOPIC_GROUP = "话题图片"
+COMPARISON_GROUP_LIMIT = 8
+TOPIC_LIMIT = 17
 
 
 def _image_files(folder: Path, recursive: bool = False) -> list[Path]:
@@ -89,49 +93,91 @@ def ensure_promo_image() -> Path:
     return PROMO_IMAGE_PATH
 
 
-def build_post_images(
-    project_root: Path,
-    mode: str,
-    folder_path: str,
-    count: int,
-) -> tuple[list[Path], dict[str, int]]:
+def _resolve_folder(project_root: Path, folder_path: str) -> Path:
     folder = (project_root / folder_path).resolve()
     root = project_root.resolve()
     if folder == root or not folder.is_relative_to(root) or not folder.is_dir():
         raise ValueError("请选择项目目录中的有效图片文件夹。")
     if any(part.lower() in {".git", ".venv", "venv", "env", "__pycache__", "models", "music", "node_modules"} for part in Path(folder_path).parts):
         raise ValueError("不能从受保护的项目目录中抽取图片。")
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise ValueError("挑选数量必须是正整数。")
+    return folder
 
-    selected: list[Path] = []
-    group_counts: dict[str, int] = {}
+
+def list_candidate_images(project_root: Path, mode: str, folder_path: str) -> dict[str, list[Path]]:
+    """按分组列出可选图片：对比模式为“数值高/数值低”，话题模式为单组。"""
+    folder = _resolve_folder(project_root, folder_path)
     if mode == "comparison":
-        if count > 8:
-            raise ValueError("数值高和数值低对比模式每个级别最多抽取 8 张（另加 1 张推广图）。")
-        
-        high_images = _image_files(folder / "数值高")
-        low_images = _image_files(folder / "数值低")
-        
-        if len(high_images) < count or len(low_images) < count:
-            raise ValueError(
-                f"图片数量不足：数值高文件夹有 {len(high_images)} 张，数值低文件夹有 {len(low_images)} 张，"
-                f"每组需要 {count} 张。"
-            )
-        selected = random.sample(high_images, count) + random.sample(low_images, count)
-        group_counts = {"数值高": count, "数值低": count}
-    elif mode == "topic":
-        if count > 17:
-            raise ValueError("话题模式最多抽取 17 张（另加 1 张推广图）。")
-        images = _image_files(folder, recursive=True)
-        if len(images) < count:
-            raise ValueError(f"所选文件夹只有 {len(images)} 张照片，无法抽取 {count} 张。")
-        selected = random.sample(images, count)
-        group_counts = {"topic": count}
+        return {group: _image_files(folder / group) for group in COMPARISON_GROUPS}
+    if mode == "topic":
+        return {TOPIC_GROUP: _image_files(folder, recursive=True)}
+    raise ValueError("不支持的发布素材模式。")
+
+
+def candidate_key(folder: Path, path: Path) -> str:
+    return path.relative_to(folder).as_posix()
+
+
+def build_post_images(
+    project_root: Path,
+    mode: str,
+    folder_path: str,
+    count: int,
+    selected_keys: list[str] | None = None,
+) -> tuple[list[Path], dict[str, int]]:
+    folder = _resolve_folder(project_root, folder_path)
+    candidates = list_candidate_images(project_root, mode, folder_path)
+    per_group_limit = COMPARISON_GROUP_LIMIT if mode == "comparison" else TOPIC_LIMIT
+
+    if selected_keys is not None:
+        selected, group_counts = _pick_selected(folder, candidates, selected_keys, per_group_limit)
     else:
-        raise ValueError("不支持的发布素材模式。")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("挑选数量必须是正整数。")
+        if count > per_group_limit:
+            raise ValueError(
+                f"数值高和数值低对比模式每个级别最多抽取 {COMPARISON_GROUP_LIMIT} 张（另加 1 张推广图）。"
+                if mode == "comparison"
+                else f"话题模式最多抽取 {TOPIC_LIMIT} 张（另加 1 张推广图）。"
+            )
+        shortages = [f"{name} 有 {len(images)} 张" for name, images in candidates.items() if len(images) < count]
+        if shortages:
+            raise ValueError(f"图片数量不足：{'，'.join(shortages)}，每组需要 {count} 张。")
+        selected = [path for images in candidates.values() for path in random.sample(images, count)]
+        group_counts = {name: count for name in candidates}
 
     promo_image = ensure_promo_image()
     if len(selected) + 1 > 18:
         raise ValueError("图片总数超过平台单篇图文笔记的 18 张限制。")
     return [*selected, promo_image], group_counts
+
+
+def _pick_selected(
+    folder: Path,
+    candidates: dict[str, list[Path]],
+    selected_keys: list[str],
+    per_group_limit: int,
+) -> tuple[list[Path], dict[str, int]]:
+    if not isinstance(selected_keys, list) or not all(isinstance(key, str) for key in selected_keys):
+        raise ValueError("手动选图列表格式错误。")
+    if len(set(selected_keys)) != len(selected_keys):
+        raise ValueError("手动选图中有重复图片。")
+    wanted = set(selected_keys)
+    selected: list[Path] = []
+    group_counts: dict[str, int] = {}
+    # 按分组顺序输出（对比模式先高后低），组内保持用户勾选顺序。
+    order = {key: index for index, key in enumerate(selected_keys)}
+    for name, images in candidates.items():
+        picked = sorted(
+            (path for path in images if candidate_key(folder, path) in wanted),
+            key=lambda path: order[candidate_key(folder, path)],
+        )
+        if not picked:
+            raise ValueError(f"请至少从“{name}”中选择 1 张图片。")
+        if len(picked) > per_group_limit:
+            raise ValueError(f"“{name}”最多选择 {per_group_limit} 张，当前选了 {len(picked)} 张。")
+        wanted -= {candidate_key(folder, path) for path in picked}
+        selected.extend(picked)
+        group_counts[name] = len(picked)
+    if wanted:
+        raise ValueError("部分选中的图片已不存在，请刷新图片列表后重新选择。")
+    return selected, group_counts
