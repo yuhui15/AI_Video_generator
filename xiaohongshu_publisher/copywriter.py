@@ -31,7 +31,8 @@ def generate_copywriting(
         f"正文分 2-3 段，段落之间换行，共 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。"
         "不用 Markdown，不写网址。"
         f"{extra}\n"
-        '只返回 JSON：{"title":"标题（≤20字，英文和空格也算字数）","content":"正文"}'
+        "标题不要出现英文名，直接写中文标题（如“欧美男神的阳光颜值”）。\n"
+        '只返回 JSON：{"title":"标题（≤20字）","content":"正文"}'
     )
     last_error: RuntimeError | None = None
     for _ in range(MAX_ATTEMPTS):
