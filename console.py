@@ -22,6 +22,7 @@ from xiaohongshu_publisher.image_loader import build_post_images, candidate_key,
 from xiaohongshu_publisher.publisher import (
     PublisherEditorNotFound,
     PublisherManualIntervention,
+    browser_alive,
     click_publish,
     open_filled_draft,
 )
@@ -149,6 +150,7 @@ PAGE = r"""<!doctype html>
     .nav-actions { display:flex; gap:10px; margin:24px 0; }
     .nav-actions button,.item-action { border:1px solid #cbd2d7; border-radius:3px; padding:9px 13px; background:#fff; color:#245b7c; cursor:pointer; }
     .nav-actions button[aria-current="page"] { background:#174f77; border-color:#174f77; color:#fff; }
+    .check-row { display:flex; align-items:center; gap:8px; margin:14px 0 0; color:#24292d; font-weight:600; cursor:pointer; }
     .sub-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin:0 0 18px; padding:4px; border-radius:12px; background:#e6eaed; }
     .sub-tabs button { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 12px; border:0; border-radius:9px; background:transparent; color:#5b646b; cursor:pointer; transition:background .15s, color .15s, box-shadow .15s; }
     .sub-tabs button:hover { color:#24292d; }
@@ -313,9 +315,10 @@ PAGE = r"""<!doctype html>
             <option value="private">仅自己可见（private）</option>
           </select>
         </div>
+        <label class="check-row"><input type="checkbox" id="publisher-auto-click" checked> 填好后自动点击“发布”</label>
         <div class="publisher-actions">
           <button type="button" class="item-action" id="regenerate-publisher">换一组图片和文案</button>
-          <button type="button" class="submit" id="open-publisher">打开小红书并自动填入草稿</button>
+          <button type="button" class="submit" id="open-publisher">打开小红书并自动发布</button>
           <button type="button" class="item-action" id="close-publisher" hidden>关闭小红书浏览器</button>
         </div>
       </section>
@@ -1032,6 +1035,13 @@ document.getElementById("publisher-folder").addEventListener("change", loadPubli
 document.getElementById("publisher-pick-mode").addEventListener("change", updatePublisherPickMode);
 document.getElementById("prepare-publisher").addEventListener("click", preparePublisherDraft);
 document.getElementById("regenerate-publisher").addEventListener("click", preparePublisherDraft);
+function updateOpenPublisherLabel() {
+  document.getElementById("open-publisher").textContent = document.getElementById("publisher-auto-click").checked
+    ? "打开小红书并自动发布"
+    : "打开小红书并自动填入草稿";
+}
+document.getElementById("publisher-auto-click").addEventListener("change", updateOpenPublisherLabel);
+updateOpenPublisherLabel();
 document.getElementById("open-publisher").addEventListener("click", async event => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -1042,7 +1052,8 @@ document.getElementById("open-publisher").addEventListener("click", async event 
       body:JSON.stringify({
         title:document.getElementById("publisher-title").value,
         content:document.getElementById("publisher-content").value,
-        visibility:document.getElementById("publisher-visibility").value
+        visibility:document.getElementById("publisher-visibility").value,
+        auto_publish:document.getElementById("publisher-auto-click").checked
       })
     });
     const data = await response.json();
@@ -1064,6 +1075,7 @@ async function pollPublisherStatus() {
     document.getElementById("close-publisher").hidden = data.status !== "ready";
     clearTimeout(publisherTimer);
     if (data.status === "starting") publisherTimer = setTimeout(pollPublisherStatus, 1500);
+    else if (data.status === "ready") publisherTimer = setTimeout(pollPublisherStatus, 4000);
   } catch (error) {
     document.getElementById("publisher-state").textContent = `发布状态读取失败：${error.message}`;
   }
@@ -1484,6 +1496,7 @@ def run_publisher_browser(
     title: str,
     content: str,
     visibility: str,
+    auto_publish: bool,
 ) -> None:
     global publisher_driver
 
@@ -1491,8 +1504,16 @@ def run_publisher_browser(
         with publisher_lock:
             publisher_state.update(status="starting", message=message)
 
+    def register_driver(driver: Any) -> None:
+        # 浏览器一启动就登记，状态轮询才能发现用户中途把它关掉了。
+        global publisher_driver
+        with publisher_lock:
+            publisher_driver = driver
+
     try:
-        driver = open_filled_draft(image_paths, title, content, visibility, update_status)
+        driver = open_filled_draft(image_paths, title, content, visibility, update_status, register_driver)
+        if auto_publish:
+            click_publish(driver, update_status)
     except PublisherEditorNotFound as exc:
         with publisher_lock:
             publisher_driver = exc.driver
@@ -1505,7 +1526,35 @@ def run_publisher_browser(
         return
     except Exception as exc:
         with publisher_lock:
-            publisher_state.update(status="error", message=f"打开小红书草稿失败：{exc}")
+            driver = publisher_driver
+            publisher_driver = None
+        browser_closed = driver is not None and not browser_alive(driver)
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        message = (
+            "浏览器在处理中被关闭，本次未完成，可以重新点击。"
+            if browser_closed
+            else f"打开小红书草稿失败：{exc}"
+        )
+        with publisher_lock:
+            publisher_state.update(status="error", message=message)
+        return
+    if auto_publish:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        with publisher_lock:
+            publisher_driver = None
+            publisher_state.update(
+                status="draft",
+                message="已自动点击发布，小红书显示发布成功"
+                + ("（仅自己可见）" if visibility == "private" else "")
+                + "。",
+            )
         return
     with publisher_lock:
         publisher_driver = driver
@@ -1539,8 +1588,8 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
             if not api_key:
                 raise RuntimeError("未绑定 Mistral API Key。")
             auto_log(f"第 {round_no} 篇：正在抽图并生成文案。", next_at=None)
-            images, group_counts = build_post_images(ROOT, config["mode"], config["folder"], config["count"])
-            copy = generate_copywriting(api_key, config["mode"], config["folder"], group_counts, config["prompt"])
+            images, _ = build_post_images(ROOT, config["mode"], config["folder"], config["count"])
+            copy = generate_copywriting(api_key, config["mode"], config["folder"], config["prompt"])
             auto_log(f"第 {round_no} 篇：文案《{copy['title']}》已生成，正在打开小红书。")
 
             def update_status(message: str) -> None:
@@ -1645,9 +1694,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(snapshot)
             return
         if request.path == "/api/publisher/status":
-            with publisher_lock:
-                status = dict(publisher_state)
-            self.send_json(status)
+            self.send_publisher_status()
             return
         if request.path == "/api/manage/list":
             try:
@@ -1835,7 +1882,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            images, group_counts = build_post_images(ROOT, mode, folder, count, selected_images)
+            images, _ = build_post_images(ROOT, mode, folder, count, selected_images)
         except ValueError as exc:
             with publisher_lock:
                 publisher_state.update(status="error", message=str(exc))
@@ -1852,7 +1899,6 @@ class Handler(BaseHTTPRequestHandler):
                 api_key,
                 mode,
                 selected_folder.name,
-                group_counts,
                 prompt,
             )
         except RuntimeError as exc:
@@ -1994,6 +2040,23 @@ class Handler(BaseHTTPRequestHandler):
                     return
         self.send_json({"error": "图片不存在。"}, 404)
 
+    def send_publisher_status(self) -> None:
+        global publisher_driver
+        with publisher_lock:
+            driver = publisher_driver if publisher_state["status"] == "ready" else None
+        if driver is not None and not browser_alive(driver):
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            with publisher_lock:
+                if publisher_driver is driver:
+                    publisher_driver = None
+                    publisher_state.update(status="draft", message="小红书浏览器已被关闭，可以重新打开。")
+        with publisher_lock:
+            status = dict(publisher_state)
+        self.send_json(status)
+
     def launch_publisher_draft(self) -> None:
         global publisher_driver
         try:
@@ -2001,8 +2064,11 @@ class Handler(BaseHTTPRequestHandler):
             title = payload.get("title")
             content = payload.get("content")
             visibility = payload.get("visibility", "public")
+            auto_publish = payload.get("auto_publish", False)
             if visibility not in {"public", "private"}:
                 raise ValueError("可见范围只能是 public 或 private。")
+            if not isinstance(auto_publish, bool):
+                raise ValueError("自动发布选项格式错误。")
             if not isinstance(title, str) or not title.strip() or len(title.strip()) > 20:
                 raise ValueError("标题不能为空且不能超过 20 个字符。")
             if not isinstance(content, str) or not content.strip() or len(content.strip()) > 1000:
@@ -2022,10 +2088,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             publisher_draft["copy"] = {"title": title.strip(), "content": content.strip()}
             image_paths = list(publisher_draft["images"])
+            old_driver = publisher_driver
+            publisher_driver = None
             publisher_state.update(status="starting", message="正在启动小红书创作者编辑页。")
+        if old_driver is not None:
+            try:
+                old_driver.quit()
+            except Exception:
+                pass
         worker = threading.Thread(
             target=run_publisher_browser,
-            args=(image_paths, title.strip(), content.strip(), visibility),
+            args=(image_paths, title.strip(), content.strip(), visibility, auto_publish),
             daemon=True,
         )
         worker.start()

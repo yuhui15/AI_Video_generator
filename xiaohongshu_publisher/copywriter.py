@@ -20,31 +20,16 @@ def generate_copywriting(
     api_key: str,
     mode: str,
     category: str,
-    group_counts: dict[str, int],
     creator_prompt: str,
 ) -> dict[str, str]:
-    style_prompt = (
-        "文风参考小红书爆火的“月老点评”：毒舌、犀利、一针见血，敢下极端结论，"
-        "例如“典型的经济适用男”“扔进人堆里瞬间隐身”“别信什么有趣的灵魂”“这就是残酷现实”。"
-        "这些例句只用来参考语气，禁止照抄或套用其中的词句，要结合内容类别写出新鲜的比喻。"
-        "可以狠，但不带脏字、不做人身侮辱、不涉及地域/性别/身体缺陷歧视。"
-        "绝对不要使用任何 Markdown 格式（如加粗 **、标题符等）。"
-        f"正文写三句狠话：第一句下极端结论，第二句用具体比喻展开，第三句补刀或点出残酷现实，"
-        f"合计 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 个字（不能少于 {ROAST_MIN_CHARS} 字），每句之间换行。"
-        "不要写网址或推荐语，系统会自动追加。"
-    )
-    if mode == "comparison":
-        task_prompt = "撰写一篇适合小红书的高低颜值对比图文笔记，用一句狠话点破高低分差距。"
-    else:
-        task_prompt = "根据用户提供的话题撰写一篇适合小红书的图文笔记，核心围绕想知道自己颜值是什么水平。"
+    topic = f"“{category}”颜值对比" if mode == "comparison" else f"话题“{category}”"
+    extra = f"\n补充要求：{creator_prompt.strip()}" if creator_prompt.strip() else ""
     prompt = (
-        f"{task_prompt}\n{style_prompt}\n\n"
-        f"内容类别：{category}\n"
-        f"图片分组与数量：{json.dumps(group_counts, ensure_ascii=False)}\n"
-        f"创作者补充要求：{creator_prompt.strip() or '无'}\n\n"
-        '只返回 JSON 对象，且必须包含两个字符串字段："title" 和 "content"。'
-        '格式示例：{"title":"标题","content":"正文"}。不要使用其他字段名，也不要返回 Markdown 代码块。'
-        f"标题最多 20 个字符，正文 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 个字符。"
+        f"为小红书{topic}图文写文案。"
+        f"正文用极端化语言写三句狠话（下结论、打比喻、补刀），每句换行，共 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 字。"
+        "不带脏字和歧视，不用 Markdown，不写网址。"
+        f"{extra}\n"
+        '只返回 JSON：{"title":"标题（≤20字）","content":"正文"}'
     )
     last_error: RuntimeError | None = None
     for _ in range(MAX_ATTEMPTS):

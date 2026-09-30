@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Callable
 
+import psutil
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
@@ -13,6 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 CREATOR_URL = "https://creator.xiaohongshu.com/publish/publish"
 PROFILE_DIR = Path(__file__).resolve().parent / ".browser_profile"
+CHROME_START_TIMEOUT = 90
 
 
 class PublisherEditorNotFound(RuntimeError):
@@ -33,15 +36,14 @@ def open_filled_draft(
     content: str,
     visibility: str,
     status_callback: Callable[[str], None],
+    driver_callback: Callable[[uc.Chrome], None] | None = None,
 ) -> uc.Chrome:
-    options = uc.ChromeOptions()
-    options.add_argument(f"--user-data-dir={PROFILE_DIR}")
-    options.add_argument("--start-maximized")
-    
-    try:
-        driver = uc.Chrome(options=options, version_main=153)
-    except Exception:
-        driver = uc.Chrome(options=options)
+    status_callback("正在启动浏览器。")
+    driver = _start_chrome()
+    # 用户中途关掉浏览器时，页面加载不能一直卡着（默认 300 秒）。
+    driver.set_page_load_timeout(60)
+    if driver_callback is not None:
+        driver_callback(driver)
 
     try:
         status_callback("正在打开小红书创作者平台；如未登录，请在浏览器中完成登录。")
@@ -152,6 +154,59 @@ def open_filled_draft(
         raise RuntimeError(f"草稿准备失败：{exc}") from exc
 
 
+def _start_chrome() -> uc.Chrome:
+    # 上次残留的专用浏览器会占着配置目录，新浏览器启动时会无限等待，先清掉。
+    close_stale_browsers()
+    box: dict[str, object] = {}
+
+    def start() -> None:
+        try:
+            try:
+                box["driver"] = uc.Chrome(options=_chrome_options(), version_main=153)
+            except Exception:
+                # uc 不允许复用同一个 ChromeOptions，重试时必须新建。
+                box["driver"] = uc.Chrome(options=_chrome_options())
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=start, daemon=True)
+    worker.start()
+    worker.join(CHROME_START_TIMEOUT)
+    if worker.is_alive():
+        close_stale_browsers()
+        raise RuntimeError("浏览器启动超时（可能在启动过程中被关闭），请重新点击。")
+    if "error" in box:
+        raise RuntimeError(f"浏览器启动失败：{box['error']}")
+    return box["driver"]  # type: ignore[return-value]
+
+
+def close_stale_browsers() -> None:
+    """结束所有使用本工具专用配置目录的 Chrome 进程（不影响用户日常使用的 Chrome）。"""
+    marker = str(PROFILE_DIR).lower()
+    for process in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (process.info["name"] or "").lower()
+            cmdline = " ".join(process.info["cmdline"] or []).lower()
+            if name.startswith("chrome") and f"--user-data-dir={marker}" in cmdline:
+                process.kill()
+        except psutil.Error:
+            continue
+
+
+def _chrome_options() -> uc.ChromeOptions:
+    options = uc.ChromeOptions()
+    options.add_argument(f"--user-data-dir={PROFILE_DIR}")
+    options.add_argument("--start-maximized")
+    return options
+
+
+def browser_alive(driver: uc.Chrome) -> bool:
+    try:
+        return bool(driver.window_handles)
+    except Exception:
+        return False
+
+
 def _upload_images(driver: uc.Chrome, file_input, image_paths: list[Path]) -> None:
     if not image_paths:
         raise ValueError("没有可上传的图片。")
@@ -199,8 +254,14 @@ def _click_upload_image_mode(driver: uc.Chrome) -> bool:
     return False
 
 
+PUBLISH_HOST_SELECTOR = "xhs-publish-btn"
+# “发布”按钮在 <xhs-publish-btn> 的 closed shadow root 里，DOM 查询拿不到。
+# 里面是两个 120px 宽、间距 24px 的居中按钮，“发布”在右边，所以中心点在宿主中心右侧 72px。
+PUBLISH_BUTTON_OFFSET_X = 60 + 24 / 2
+
+
 def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> None:
-    """全自动模式：等图片上传完成后点击“发布”，并等待发布成功的信号。"""
+    """等图片上传完成后点击“发布”，并等待发布成功的信号。"""
     status_callback("正在等待图片上传完成。")
     WebDriverWait(driver, 180).until(
         lambda d: not any(
@@ -209,28 +270,64 @@ def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> 
         )
     )
     try:
-        button = WebDriverWait(driver, 60).until(_ready_publish_button)
+        host = WebDriverWait(driver, 60).until(_ready_publish_host)
     except TimeoutException as exc:
-        raise RuntimeError("未找到可点击的“发布”按钮。") from exc
+        raise RuntimeError("“发布”按钮一直不可用（可能图片仍在处理或页面有未填项）。") from exc
     time.sleep(2)
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+    x, y = driver.execute_script(
+        "const r = arguments[0].getBoundingClientRect();"
+        "return [r.left + r.width / 2 + arguments[1], r.top + r.height / 2];",
+        host,
+        PUBLISH_BUTTON_OFFSET_X,
+    )
+    # 点击前先确认该坐标下确实是红色“发布”按钮，避免页面改版后点错（比如点到“暂存离开”）。
+    target = _describe_node_at(driver, x, y)
+    if target.get("nodeName") != "BUTTON" or "bg-red" not in target.get("class", ""):
+        raise RuntimeError(f"“发布”按钮位置与预期不符（该位置是 {target or '空'}），已停止，未点击。")
     status_callback("正在点击“发布”。")
-    if not _safe_click(driver, button):
-        raise RuntimeError("点击“发布”按钮失败。")
-    try:
-        WebDriverWait(driver, 60).until(
-            lambda d: "published=true" in d.current_url or bool(_visible_text_elements(d, "发布成功"))
+    for event in ("mouseMoved", "mousePressed", "mouseReleased"):
+        driver.execute_cdp_cmd(
+            "Input.dispatchMouseEvent",
+            {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
         )
+    try:
+        WebDriverWait(driver, 60).until(_publish_finished)
     except TimeoutException as exc:
         raise RuntimeError("已点击“发布”，但 60 秒内未看到发布成功提示，请到小红书检查。") from exc
 
 
-def _ready_publish_button(driver: uc.Chrome):
-    for element in driver.find_elements(By.XPATH, "//button[normalize-space(.)='发布']"):
-        disabled = "disabled" in (element.get_attribute("class") or "")
-        if element.is_displayed() and element.is_enabled() and not disabled:
-            return element
+def _ready_publish_host(driver: uc.Chrome):
+    for host in driver.find_elements(By.CSS_SELECTOR, PUBLISH_HOST_SELECTOR):
+        if (
+            host.is_displayed()
+            and host.get_attribute("submit-disabled") != "true"
+            and host.get_attribute("submit-loading") != "true"
+        ):
+            return host
     return False
+
+
+def _describe_node_at(driver: uc.Chrome, x: float, y: float) -> dict[str, str]:
+    """用 CDP 查坐标处的真实节点（能穿透 closed shadow root）。"""
+    driver.execute_cdp_cmd("DOM.getDocument", {"depth": 0})
+    located = driver.execute_cdp_cmd(
+        "DOM.getNodeForLocation",
+        {"x": round(x), "y": round(y), "includeUserAgentShadowDOM": False},
+    )
+    node = driver.execute_cdp_cmd("DOM.describeNode", {"backendNodeId": located["backendNodeId"]})["node"]
+    attributes = node.get("attributes", [])
+    return {
+        "nodeName": node.get("nodeName", ""),
+        **{attributes[i]: attributes[i + 1] for i in range(0, len(attributes) - 1, 2)},
+    }
+
+
+def _publish_finished(driver: uc.Chrome) -> bool:
+    url = driver.current_url
+    if "/publish/success" in url or "published=true" in url or _visible_text_elements(driver, "发布成功"):
+        return True
+    # 发布成功后会离开编辑页，发布按钮随之消失。
+    return not driver.find_elements(By.CSS_SELECTOR, PUBLISH_HOST_SELECTOR)
 
 
 PRIVATE_LABEL = "仅自己可见"
