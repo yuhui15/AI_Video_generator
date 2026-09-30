@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import requests
 
@@ -8,6 +9,7 @@ import requests
 MISTRAL_MODEL = "ministral-14b-2512"
 MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
 MAX_ATTEMPTS = 4
+TITLE_MAX_CHARS = 20
 SITE_LINE = "想知道自己几分？去 yanzumeixue.com 测"
 # 字数只算正文部分，不含末尾自动追加的网址推荐行。
 BODY_MIN_CHARS = 100
@@ -29,29 +31,25 @@ def generate_copywriting(
         f"正文分 2-3 段，段落之间换行，共 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。"
         "不用 Markdown，不写网址。"
         f"{extra}\n"
-        '只返回 JSON：{"title":"标题（≤20字）","content":"正文"}'
+        '只返回 JSON：{"title":"标题（≤20字，英文和空格也算字数）","content":"正文"}'
     )
     last_error: RuntimeError | None = None
     for _ in range(MAX_ATTEMPTS):
         try:
             return _request_copywriting(api_key, prompt)
-        except CopyLengthOutOfRange as exc:
+        except CopyNeedsRetry as exc:
             last_error = exc
-            adjust = "更短" if exc.body_length > BODY_MAX_CHARS else "更长、更饱满"
-            prompt += (
-                f"\n\n上一次正文 {exc.body_length} 字，不符合要求，请重写得{adjust}，"
-                f"严格控制在 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。"
-            )
+            prompt += f"\n\n{exc.feedback}"
     assert last_error is not None
     raise last_error
 
 
-class CopyLengthOutOfRange(RuntimeError):
-    def __init__(self, body_length: int) -> None:
-        super().__init__(
-            f"生成正文 {body_length} 字（不含网址推荐），不在 {BODY_MIN_CHARS}-{BODY_MAX_CHARS} 字范围内，请重试。"
-        )
-        self.body_length = body_length
+class CopyNeedsRetry(RuntimeError):
+    """标题或正文长度不合规：带着给模型的修改意见重试。"""
+
+    def __init__(self, message: str, feedback: str) -> None:
+        super().__init__(message)
+        self.feedback = feedback
 
 
 def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
@@ -99,8 +97,10 @@ def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
         )
     title = title.strip()
     content = content.strip()
-    if not title or len(title) > 20:
-        raise RuntimeError("生成标题为空或超过 20 个字符，请调整要求后重试。")
+    if not title:
+        raise CopyNeedsRetry("生成标题为空，请重试。", "上一次没有给出标题，请补上标题。")
+    # 模型常把英文人名塞进标题导致超长，重试也改不过来，直接缩短。
+    title = _shorten_title(title)
     # 模型偶尔会自己写推荐语，统一去掉后再追加固定推荐行。
     body = "\n".join(line for line in content.splitlines() if "yanzumeixue" not in line).strip()
     if not body:
@@ -108,8 +108,26 @@ def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
     if len(body) > BODY_MAX_CHARS:
         body = _trim_to_sentence(body) or body
     if not BODY_MIN_CHARS <= len(body) <= BODY_MAX_CHARS:
-        raise CopyLengthOutOfRange(len(body))
+        adjust = "更短" if len(body) > BODY_MAX_CHARS else "更长、更饱满"
+        raise CopyNeedsRetry(
+            f"生成正文 {len(body)} 字（不含网址推荐），不在 {BODY_MIN_CHARS}-{BODY_MAX_CHARS} 字范围内，请重试。",
+            f"上一次正文 {len(body)} 字，不符合要求，请重写得{adjust}，严格控制在 {BODY_TARGET[0]}-{BODY_TARGET[1]} 字。",
+        )
     return {"title": title, "content": f"{body}\n{SITE_LINE}"}
+
+
+def _shorten_title(title: str) -> str:
+    """标题超长时按标点切分，尽量保留开头完整的几段；仍超长就直接截断。"""
+    if len(title) <= TITLE_MAX_CHARS:
+        return title
+    pieces = re.split(r"(?<=[：:，,！!？?｜|—])", title)
+    shortened = ""
+    for piece in pieces:
+        if len(shortened + piece) > TITLE_MAX_CHARS:
+            break
+        shortened += piece
+    shortened = shortened.rstrip("：:，,｜|— ")
+    return shortened if shortened else title[:TITLE_MAX_CHARS].rstrip()
 
 
 def _trim_to_sentence(body: str) -> str | None:

@@ -258,6 +258,8 @@ PUBLISH_HOST_SELECTOR = "xhs-publish-btn"
 # “发布”按钮在 <xhs-publish-btn> 的 closed shadow root 里，DOM 查询拿不到。
 # 里面是两个 120px 宽、间距 24px 的居中按钮，“发布”在右边，所以中心点在宿主中心右侧 72px。
 PUBLISH_BUTTON_OFFSET_X = 60 + 24 / 2
+PUBLISH_CLICK_ATTEMPTS = 3
+PUBLISH_REACTION_SECONDS = 10
 
 
 def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> None:
@@ -284,16 +286,35 @@ def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> 
     target = _describe_node_at(driver, x, y)
     if target.get("nodeName") != "BUTTON" or "bg-red" not in target.get("class", ""):
         raise RuntimeError(f"“发布”按钮位置与预期不符（该位置是 {target or '空'}），已停止，未点击。")
-    status_callback("正在点击“发布”。")
-    for event in ("mouseMoved", "mousePressed", "mouseReleased"):
-        driver.execute_cdp_cmd(
-            "Input.dispatchMouseEvent",
-            {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
-        )
+    # 偶尔点击后页面毫无反应（按钮没进入 loading），所以没反应时重点；一旦开始发布就只等待，绝不重复点击。
+    for attempt in range(1, PUBLISH_CLICK_ATTEMPTS + 1):
+        status_callback("正在点击“发布”。" if attempt == 1 else f"点击后无反应，第 {attempt} 次点击“发布”。")
+        for event in ("mouseMoved", "mousePressed", "mouseReleased"):
+            driver.execute_cdp_cmd(
+                "Input.dispatchMouseEvent",
+                {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
+            )
+        if _wait_publish_started(driver, PUBLISH_REACTION_SECONDS):
+            break
+    else:
+        raise RuntimeError(f"连续点击“发布” {PUBLISH_CLICK_ATTEMPTS} 次都没有反应，请到小红书页面检查。")
     try:
         WebDriverWait(driver, 60).until(_publish_finished)
     except TimeoutException as exc:
         raise RuntimeError("已点击“发布”，但 60 秒内未看到发布成功提示，请到小红书检查。") from exc
+
+
+def _wait_publish_started(driver: uc.Chrome, seconds: float) -> bool:
+    """点击后等待发布开始：按钮进入 loading、跳到成功页或发布按钮消失都算。"""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if _publish_finished(driver):
+            return True
+        hosts = driver.find_elements(By.CSS_SELECTOR, PUBLISH_HOST_SELECTOR)
+        if hosts and hosts[0].get_attribute("submit-loading") == "true":
+            return True
+        time.sleep(0.3)
+    return False
 
 
 def _ready_publish_host(driver: uc.Chrome):

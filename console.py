@@ -60,7 +60,7 @@ publisher_lock = threading.Lock()
 publisher_state: dict[str, str] = {"status": "idle", "message": ""}
 publisher_draft: dict[str, Any] | None = None
 publisher_driver: Any = None
-AUTO_MIN_INTERVAL_SECONDS = 60
+AUTO_MIN_INTERVAL_SECONDS = 10
 AUTO_MAX_CONSECUTIVE_FAILURES = 3
 auto_stop_event = threading.Event()
 auto_state: dict[str, Any] = {
@@ -363,6 +363,10 @@ PAGE = r"""<!doctype html>
             <div class="wheel-column">
               <div class="wheel" id="auto-minutes" tabindex="0" role="listbox" aria-label="分钟"></div>
               <span class="wheel-unit">分钟</span>
+            </div>
+            <div class="wheel-column">
+              <div class="wheel" id="auto-seconds" tabindex="0" role="listbox" aria-label="秒"></div>
+              <span class="wheel-unit">秒</span>
             </div>
             <div class="wheel-highlight" aria-hidden="true"></div>
           </div>
@@ -1130,55 +1134,66 @@ function updateAutoFolders() {
   if (previous && [...select.options].some(option => option.value === previous)) select.value = previous;
 }
 const WHEEL_ROW = 36;
-function buildWheel(id, max, initial) {
+// 滚轮第 index 行的值是 index * step（秒轮按 10 秒一格）。
+function buildWheel(id, max, step, initial) {
   const wheel = document.getElementById(id);
-  for (let value = 0; value <= max; value += 1) {
+  const lastIndex = Math.floor(max / step);
+  for (let index = 0; index <= lastIndex; index += 1) {
     const row = document.createElement("div");
     row.role = "option";
-    row.textContent = value;
-    row.addEventListener("click", () => wheel.scrollTo({top:value * WHEEL_ROW, behavior:"smooth"}));
+    row.textContent = index * step;
+    row.addEventListener("click", () => wheel.scrollTo({top:index * WHEEL_ROW, behavior:"smooth"}));
     wheel.append(row);
   }
   wheel.addEventListener("keydown", event => {
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     event.preventDefault();
-    const next = Math.min(max, Math.max(0, wheelValue(wheel) + (event.key === "ArrowDown" ? 1 : -1)));
+    const next = Math.min(lastIndex, Math.max(0, wheelIndex(wheel) + (event.key === "ArrowDown" ? 1 : -1)));
     wheel.scrollTo({top:next * WHEEL_ROW, behavior:"smooth"});
   });
-  // 值记在 data-value 上：面板隐藏时 scrollTop 恒为 0，不能直接读取。
-  wheel.dataset.value = initial;
+  // 选中行记在 data-index 上：面板隐藏时 scrollTop 恒为 0，不能直接读取。
+  wheel.dataset.index = initial / step;
+  wheel.dataset.step = step;
   let settle = null;
   wheel.addEventListener("scroll", () => {
     if (!wheel.clientHeight) return;
     clearTimeout(settle);
     settle = setTimeout(() => {
-      wheel.dataset.value = Math.min(max, Math.round(wheel.scrollTop / WHEEL_ROW));
+      wheel.dataset.index = Math.min(lastIndex, Math.round(wheel.scrollTop / WHEEL_ROW));
       updateAutoIntervalHelp();
     }, 120);
   });
   return wheel;
 }
+function wheelIndex(wheel) {
+  return Number(wheel.dataset.index);
+}
 function wheelValue(wheel) {
-  return Number(wheel.dataset.value);
+  return wheelIndex(wheel) * Number(wheel.dataset.step);
 }
+const autoHours = buildWheel("auto-hours", 23, 1, 1);
+const autoMinutes = buildWheel("auto-minutes", 59, 1, 0);
+const autoSeconds = buildWheel("auto-seconds", 50, 10, 0);
+const autoWheels = [autoHours, autoMinutes, autoSeconds];
 function syncWheels() {
-  for (const wheel of [autoHours, autoMinutes]) wheel.scrollTop = wheelValue(wheel) * WHEEL_ROW;
+  for (const wheel of autoWheels) wheel.scrollTop = wheelIndex(wheel) * WHEEL_ROW;
 }
-const autoHours = buildWheel("auto-hours", 23, 1);
-const autoMinutes = buildWheel("auto-minutes", 59, 0);
 updateAutoIntervalHelp();
 function autoIntervalSeconds() {
-  return wheelValue(autoHours) * 3600 + wheelValue(autoMinutes) * 60;
+  return wheelValue(autoHours) * 3600 + wheelValue(autoMinutes) * 60 + wheelValue(autoSeconds);
 }
 function updateAutoIntervalHelp() {
-  const hours = wheelValue(autoHours);
-  const minutes = wheelValue(autoMinutes);
-  for (const [wheel, value] of [[autoHours, hours], [autoMinutes, minutes]]) {
-    [...wheel.children].forEach((row, index) => row.setAttribute("aria-selected", String(index === value)));
+  for (const wheel of autoWheels) {
+    [...wheel.children].forEach((row, index) => row.setAttribute("aria-selected", String(index === wheelIndex(wheel))));
   }
-  const text = autoIntervalSeconds() < 60
-    ? "间隔至少 1 分钟。"
-    : `每 ${hours ? `${hours} 小时 ` : ""}${minutes ? `${minutes} 分钟` : ""}发布一篇。`;
+  const parts = [
+    [wheelValue(autoHours), "小时"],
+    [wheelValue(autoMinutes), "分钟"],
+    [wheelValue(autoSeconds), "秒"],
+  ].filter(([value]) => value).map(([value, unit]) => `${value} ${unit}`);
+  const text = autoIntervalSeconds() < 10
+    ? "间隔至少 10 秒。"
+    : `每 ${parts.join(" ")} 发布一篇。`;
   document.getElementById("auto-interval-help").textContent = text;
 }
 let autoTimer = null;
@@ -1216,8 +1231,8 @@ document.getElementById("auto-start").addEventListener("click", async () => {
     state.textContent = "请先选择图片文件夹。";
     return;
   }
-  if (autoIntervalSeconds() < 60) {
-    state.textContent = "发布间隔至少 1 分钟。";
+  if (autoIntervalSeconds() < 10) {
+    state.textContent = "发布间隔至少 10 秒。";
     return;
   }
   const visibility = document.getElementById("auto-visibility").value;
@@ -1665,6 +1680,9 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
             auto_log(f"第 {round_no} 篇：文案《{copy['title']}》已生成，正在打开小红书。")
 
             def update_status(message: str) -> None:
+                if "无反应" in message:
+                    auto_log(f"第 {round_no} 篇：{message}")
+                    return
                 with publisher_lock:
                     auto_state["message"] = f"第 {round_no} 篇：{message}"
 
@@ -1693,7 +1711,7 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
         next_at = time.time() + config["interval"]
         with publisher_lock:
             auto_state["next_at"] = next_at
-            auto_state["message"] = f"已发布 {published} 篇，等待下一篇（{time.strftime('%H:%M', time.localtime(next_at))}）。"
+            auto_state["message"] = f"已发布 {published} 篇，等待下一篇（{time.strftime('%H:%M:%S', time.localtime(next_at))}）。"
         if auto_stop_event.wait(config["interval"]):
             break
     auto_log(f"已手动停止自动发布，共发布 {published} 篇。", status="idle", next_at=None)
@@ -2015,7 +2033,7 @@ class Handler(BaseHTTPRequestHandler):
             if visibility not in {"public", "private"}:
                 raise ValueError("可见范围只能是 public 或 private。")
             if isinstance(interval, bool) or not isinstance(interval, int) or not AUTO_MIN_INTERVAL_SECONDS <= interval <= 24 * 3600:
-                raise ValueError("发布间隔需在 1 分钟到 24 小时之间。")
+                raise ValueError("发布间隔需在 10 秒到 24 小时之间。")
             if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target <= 100:
                 raise ValueError("发布篇数需在 0（不限）到 100 之间。")
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
