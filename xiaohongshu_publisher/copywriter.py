@@ -7,14 +7,13 @@ import requests
 
 MISTRAL_MODEL = "ministral-14b-2512"
 MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
-CONTENT_MIN_CHARS = 50
-CONTENT_MAX_CHARS = 70
 MAX_ATTEMPTS = 4
 SITE_LINE = "想知道自己几分？去 yanzumeixue.com 测"
-ROAST_MIN_CHARS = CONTENT_MIN_CHARS - len(SITE_LINE) - 1
-ROAST_MAX_CHARS = CONTENT_MAX_CHARS - len(SITE_LINE) - 1
+# 字数只算狠话部分，不含末尾自动追加的网址推荐行。
+ROAST_MIN_CHARS = 50
+ROAST_MAX_CHARS = 70
 # 给模型的目标区间比硬性区间窄一些，留出误差余量。
-ROAST_TARGET = (ROAST_MIN_CHARS + 3, ROAST_MAX_CHARS - 10)
+ROAST_TARGET = (ROAST_MIN_CHARS + 5, ROAST_MAX_CHARS - 5)
 
 
 def generate_copywriting(
@@ -30,8 +29,8 @@ def generate_copywriting(
         "这些例句只用来参考语气，禁止照抄或套用其中的词句，要结合内容类别写出新鲜的比喻。"
         "可以狠，但不带脏字、不做人身侮辱、不涉及地域/性别/身体缺陷歧视。"
         "绝对不要使用任何 Markdown 格式（如加粗 **、标题符等）。"
-        f"正文写两句狠话：第一句下极端结论，第二句补刀或点出残酷现实，"
-        f"合计 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 个字，两句之间换行。"
+        f"正文写三句狠话：第一句下极端结论，第二句用具体比喻展开，第三句补刀或点出残酷现实，"
+        f"合计 {ROAST_TARGET[0]}-{ROAST_TARGET[1]} 个字（不能少于 {ROAST_MIN_CHARS} 字），每句之间换行。"
         "不要写网址或推荐语，系统会自动追加。"
     )
     if mode == "comparison":
@@ -64,9 +63,8 @@ def generate_copywriting(
 
 class CopyLengthOutOfRange(RuntimeError):
     def __init__(self, roast_length: int) -> None:
-        total = roast_length + len(SITE_LINE) + 1
         super().__init__(
-            f"生成正文 {total} 字，不在 {CONTENT_MIN_CHARS}-{CONTENT_MAX_CHARS} 字范围内，请调整要求后重试。"
+            f"生成正文 {roast_length} 字（不含网址推荐），不在 {ROAST_MIN_CHARS}-{ROAST_MAX_CHARS} 字范围内，请重试。"
         )
         self.roast_length = roast_length
 

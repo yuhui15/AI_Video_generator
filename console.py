@@ -149,6 +149,14 @@ PAGE = r"""<!doctype html>
     .nav-actions { display:flex; gap:10px; margin:24px 0; }
     .nav-actions button,.item-action { border:1px solid #cbd2d7; border-radius:3px; padding:9px 13px; background:#fff; color:#245b7c; cursor:pointer; }
     .nav-actions button[aria-current="page"] { background:#174f77; border-color:#174f77; color:#fff; }
+    .sub-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin:0 0 18px; padding:4px; border-radius:12px; background:#e6eaed; }
+    .sub-tabs button { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 12px; border:0; border-radius:9px; background:transparent; color:#5b646b; cursor:pointer; transition:background .15s, color .15s, box-shadow .15s; }
+    .sub-tabs button:hover { color:#24292d; }
+    .sub-tabs button[aria-current="page"] { background:#fff; color:#174f77; box-shadow:0 1px 3px rgba(0,0,0,.12); }
+    .sub-tabs button:focus-visible { outline:2px solid #174f77; outline-offset:2px; }
+    .sub-tab-title { font-size:15px; font-weight:650; }
+    .sub-tab-desc { font-size:12px; color:#7a848b; }
+    @media(max-width:520px) { .sub-tab-desc { display:none; } }
     .token-controls { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; align-items:center; margin:12px 0 6px; }
     .token-controls input { min-width:0; padding:11px 12px; border:1px solid #cfd4d8; border-radius:2px; background:#fff; }
     .token-controls button { border:1px solid #cbd2d7; border-radius:3px; padding:10px 13px; background:#fff; color:#245b7c; cursor:pointer; }
@@ -191,15 +199,15 @@ PAGE = r"""<!doctype html>
     .picker-item.selected { border-color:#245b7c; }
     .picker-item .picker-order { position:absolute; top:4px; right:4px; min-width:22px; height:22px; border-radius:11px; background:#245b7c; color:#fff; font-size:12px; line-height:22px; text-align:center; }
     .field-label { display:block; margin-bottom:8px; color:#24292d; font-weight:650; }
-    .wheel-picker { position:relative; display:flex; gap:4px; width:max-content; padding:0 12px; background:#1c1c1e; border-radius:14px; user-select:none; }
+    .wheel-picker { position:relative; display:flex; gap:4px; width:max-content; padding:0 12px; background:#fff; border:1px solid #d9dddf; border-radius:14px; user-select:none; }
     .wheel-column { position:relative; display:flex; align-items:center; }
     .wheel { width:64px; height:180px; overflow-y:scroll; scroll-snap-type:y mandatory; scrollbar-width:none; padding:72px 0; box-sizing:border-box; outline:none;
       -webkit-mask-image:linear-gradient(transparent, #000 35%, #000 65%, transparent); mask-image:linear-gradient(transparent, #000 35%, #000 65%, transparent); }
     .wheel::-webkit-scrollbar { display:none; }
-    .wheel div { height:36px; line-height:36px; text-align:right; padding-right:6px; color:#f5f5f7; font-size:22px; font-variant-numeric:tabular-nums; scroll-snap-align:center; cursor:pointer; }
+    .wheel div { height:36px; line-height:36px; text-align:right; padding-right:6px; color:#1c1c1e; font-size:22px; font-variant-numeric:tabular-nums; scroll-snap-align:center; cursor:pointer; }
     .wheel:focus-visible { box-shadow:inset 0 0 0 2px #0a84ff; border-radius:10px; }
-    .wheel-unit { width:44px; color:#f5f5f7; font-size:16px; font-weight:600; position:relative; z-index:1; }
-    .wheel-highlight { position:absolute; left:8px; right:8px; top:72px; height:36px; border-radius:8px; background:rgba(255,255,255,.12); pointer-events:none; }
+    .wheel-unit { width:44px; color:#1c1c1e; font-size:16px; font-weight:600; position:relative; z-index:1; }
+    .wheel-highlight { position:absolute; left:8px; right:8px; top:72px; height:36px; border-radius:8px; background:rgba(0,0,0,.06); pointer-events:none; }
     #auto-state { min-height:24px; color:#245b7c; font-weight:650; }
     #auto-log { max-height:220px; overflow:auto; margin:8px 0 0; padding-left:18px; color:#555d63; font-size:13px; }
     #publisher-state { min-height:24px; color:#245b7c; font-weight:650; }
@@ -236,6 +244,17 @@ PAGE = r"""<!doctype html>
       <button type="button" id="show-publisher">小红书助手</button>
     </nav>
     <section id="publisher-page" hidden>
+      <nav class="sub-tabs" aria-label="小红书助手">
+        <button type="button" id="show-publisher-manual" aria-current="page">
+          <span class="sub-tab-title">图文一键准备</span>
+          <span class="sub-tab-desc">选图 + 写文案，人工审核后发布</span>
+        </button>
+        <button type="button" id="show-publisher-auto">
+          <span class="sub-tab-title">全自动发布</span>
+          <span class="sub-tab-desc">按间隔自动抽图、写文案、发布</span>
+        </button>
+      </nav>
+      <div id="publisher-manual-view">
       <section class="panel">
         <h2>小红书图文一键准备</h2>
         <p>从本地图片文件夹里挑选照片，用智能助手自动写好文案并预览；最后会自动加上一张好看的宣传图。</p>
@@ -300,10 +319,32 @@ PAGE = r"""<!doctype html>
           <button type="button" class="item-action" id="close-publisher" hidden>关闭小红书浏览器</button>
         </div>
       </section>
+      </div>
+      <div id="publisher-auto-view" hidden>
       <section class="panel" id="auto-panel">
         <h2>全自动文案发布</h2>
-        <p>使用上方的类型、图片文件夹、挑选数量和写作要求，每次随机抽图、自动写文案并<strong>直接点击发布</strong>，然后按间隔循环。</p>
+        <p>每次从所选文件夹随机抽图、自动写文案并<strong>直接点击发布</strong>，然后按间隔循环。</p>
         <div class="warning">开启后会真实发到你的小红书账号上，不再经过人工审核。建议先设为“仅自己可见”试跑一篇；间隔太短可能触发平台限流。</div>
+        <div class="field">
+          <label for="auto-mode">选择类型</label>
+          <select id="auto-mode">
+            <option value="comparison">63 种外貌特征：高低对比</option>
+            <option value="topic">自定义话题文件夹：自由写文案</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="auto-folder">图片文件夹</label>
+          <select id="auto-folder"></select>
+        </div>
+        <div class="field">
+          <label for="auto-count">每篇挑选数量</label>
+          <input id="auto-count" type="number" min="1" max="8" value="3">
+          <p class="help" id="auto-count-help"></p>
+        </div>
+        <div class="field">
+          <label for="auto-prompt">给AI的写作要求</label>
+          <textarea id="auto-prompt" maxlength="2000" placeholder="比如：语气要轻松活泼、重点突出等"></textarea>
+        </div>
         <div class="field">
           <label for="auto-visibility">谁可以看</label>
           <select id="auto-visibility">
@@ -338,6 +379,7 @@ PAGE = r"""<!doctype html>
         <p id="auto-state" role="status" aria-live="polite">未启动。</p>
         <ul id="auto-log"></ul>
       </section>
+      </div>
     </section>
     <section id="manager-page" hidden>
       <section class="panel">
@@ -917,6 +959,7 @@ async function loadPublisherFolders() {
     if (!response.ok) throw new Error(data.error || "读取文件夹失败");
     publisherFolders = data.folders;
     updatePublisherMode();
+    updateAutoMode();
   } catch (error) {
     document.getElementById("publisher-state").textContent = `读取图片文件夹失败：${error.message}`;
   }
@@ -1025,6 +1068,39 @@ async function pollPublisherStatus() {
     document.getElementById("publisher-state").textContent = `发布状态读取失败：${error.message}`;
   }
 }
+function showPublisherView(auto) {
+  document.getElementById("publisher-manual-view").hidden = auto;
+  document.getElementById("publisher-auto-view").hidden = !auto;
+  const [on, off] = auto
+    ? ["show-publisher-auto", "show-publisher-manual"]
+    : ["show-publisher-manual", "show-publisher-auto"];
+  document.getElementById(on).setAttribute("aria-current", "page");
+  document.getElementById(off).removeAttribute("aria-current");
+  if (auto) {
+    requestAnimationFrame(syncWheels);
+    pollAutoStatus();
+  }
+}
+document.getElementById("show-publisher-manual").addEventListener("click", () => showPublisherView(false));
+document.getElementById("show-publisher-auto").addEventListener("click", () => showPublisherView(true));
+function updateAutoMode() {
+  const mode = document.getElementById("auto-mode").value;
+  const countInput = document.getElementById("auto-count");
+  countInput.max = mode === "comparison" ? "8" : "17";
+  if (Number(countInput.value) > Number(countInput.max)) countInput.value = countInput.max;
+  document.getElementById("auto-count-help").textContent = mode === "comparison"
+    ? "“数值高”和“数值低”两边各随机抽取此数量；最多 8 张/组。最后会附加推广图。"
+    : "从所选话题文件夹中随机抽取；最多 17 张。最后会附加推广图。";
+  const select = document.getElementById("auto-folder");
+  const previous = select.value;
+  const available = publisherFolders.filter(folder => (mode === "comparison") === folder.is_metric);
+  select.replaceChildren(new Option(available.length ? "请选择文件夹" : "没有可用的文件夹", ""));
+  for (const folder of available) {
+    select.append(new Option(`${folder.name} · ${folder.image_count} 张照片`, folder.path));
+  }
+  if (available.some(folder => folder.path === previous)) select.value = previous;
+}
+document.getElementById("auto-mode").addEventListener("change", updateAutoMode);
 const WHEEL_ROW = 36;
 function buildWheel(id, max, initial) {
   const wheel = document.getElementById(id);
@@ -1106,10 +1182,10 @@ document.getElementById("show-publisher").addEventListener("click", () => {
   pollAutoStatus();
 });
 document.getElementById("auto-start").addEventListener("click", async event => {
-  const folder = document.getElementById("publisher-folder").value;
+  const folder = document.getElementById("auto-folder").value;
   const state = document.getElementById("auto-state");
   if (!folder) {
-    state.textContent = "请先在上方选择图片文件夹。";
+    state.textContent = "请先选择图片文件夹。";
     return;
   }
   if (autoIntervalSeconds() < 60) {
@@ -1126,10 +1202,10 @@ document.getElementById("auto-start").addEventListener("click", async event => {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        mode:document.getElementById("publisher-mode").value,
+        mode:document.getElementById("auto-mode").value,
         folder,
-        count:Number(document.getElementById("publisher-count").value),
-        prompt:document.getElementById("publisher-prompt").value,
+        count:Number(document.getElementById("auto-count").value),
+        prompt:document.getElementById("auto-prompt").value,
         visibility,
         interval:autoIntervalSeconds(),
         target
