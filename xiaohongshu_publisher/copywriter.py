@@ -104,6 +104,8 @@ def _request_copywriting(api_key: str, prompt: str) -> dict[str, str]:
     title = _shorten_title(title)
     # 模型偶尔会自己写推荐语，统一去掉后再追加固定推荐行。
     body = "\n".join(line for line in content.splitlines() if "yanzumeixue" not in line).strip()
+    # 模型偶尔仍会用 **加粗**，小红书会原样显示星号。
+    body = body.replace("**", "").replace("__", "")
     if not body:
         raise RuntimeError("生成正文为空，请调整要求后重试。")
     if len(body) > BODY_MAX_CHARS:
