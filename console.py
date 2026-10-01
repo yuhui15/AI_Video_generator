@@ -265,7 +265,7 @@ PAGE = r"""<!doctype html>
       <section class="panel">
         <h2>小红书图文一键准备</h2>
         <p>从本地图片文件夹里挑选照片，用智能助手自动写好文案并预览；最后会自动加上一张好看的宣传图。</p>
-        <div class="warning">生成的草稿不会自动发到网上。打开小红书后，请检查图片和文字，确认无误后自己点击“发布”按钮哦。</div>
+        <div class="warning">勾选“填好后自动点击发布”时会直接发到小红书，请先在下方检查图片和文字；取消勾选则只填入草稿，由你确认后自己点击“发布”。</div>
         <div class="field">
           <label for="publisher-mode">选择类型</label>
           <select id="publisher-mode">
