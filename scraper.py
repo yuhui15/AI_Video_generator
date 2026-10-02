@@ -134,6 +134,82 @@ def translate_custom_topic_if_needed(query):
         raise RuntimeError(f"翻译自定义搜索词失败：{exc}") from exc
 
 
+SEARCH_SOURCES = {
+    "looksmax": "looksmax.org（Bing 站内搜索）",
+    "bing": "Bing 全网图片",
+    "baidu": "百度图片",
+    "so360": "360 图片",
+}
+# 国内图片站有防盗链，下载原图时需要带上来源页
+SOURCE_REFERERS = {
+    "baidu": "https://image.baidu.com/",
+    "so360": "https://image.so.com/",
+}
+
+
+CHINESE_SOURCES = {"baidu", "so360"}
+
+
+def translate_query_to_chinese(query, hint=None):
+    """中文图片站用中文搜索效果最好：英文搜索词统一翻译成简洁的中文搜索词。
+
+    hint 是外貌指标的中文名和级别（如“眼距比例：宽”），帮助模型译准专业术语。
+    """
+    if any("一" <= char <= "鿿" for char in query):
+        return query
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise RuntimeError("使用中文图片来源时需要把搜索词翻译成中文，请先在网页中绑定 Mistral API Key。")
+    try:
+        response = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": MISTRAL_MODEL_NAME,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Translate the image-search query into Simplified Chinese keywords for Baidu "
+                            "Images. Chinese image search only works with SHORT queries: output 1-3 short "
+                            "keywords separated by spaces, at most 8 Chinese characters in total, e.g. "
+                            "'眼距宽 男生' or '高颧骨'. Keep person names in their common Chinese form. "
+                            "Never use words like 示意图, 插画, 图解, 卡通, 比例, 照片. Return only the "
+                            "keywords, with no quotes, explanation, or Markdown."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"{query}\n（参考：这是外貌特征“{hint}”的图片搜索）" if hint else query,
+                    },
+                ],
+                "max_tokens": 64,
+                "temperature": 0.1,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise RuntimeError(f"把搜索词翻译成中文失败：{exc}") from exc
+    translated = re.sub(r"\s+", " ", content).strip().strip("\"'“”")
+    if not translated:
+        raise RuntimeError("把搜索词翻译成中文失败：模型返回为空。")
+    print(f"[INFO] 中文来源，搜索词已翻译：{query} → {translated}")
+    return translated
+
+
+def strip_site_filter(query):
+    return re.sub(r"\s*site:\S+\s*", " ", query).strip()
+
+
+def build_search_query(query, source):
+    """looksmax 来源加上站内限制；其他来源去掉 site: 限制直接搜索。"""
+    if source == "looksmax":
+        return looksmax_search_query(query)
+    return strip_site_filter(query)[:300]
+
+
 def looksmax_search_query(query):
     query = re.sub(r"\s+", " ", query).strip()
     if "site:looksmax.org" not in query.casefold():
@@ -205,6 +281,61 @@ def rewrite_search_query_with_mistral(metric_name, level_desc, original_query):
     return looksmax_search_query(rewritten)
 
 
+def collect_candidate_urls(driver, source, keyword, attempt, headers):
+    """按搜索来源返回候选图片原图链接；attempt 越大翻页/滚动越深。"""
+    encoded = quote(keyword)
+    if source == "so360":
+        # 360 图片有公开 JSON 接口，不需要打开浏览器
+        res = requests.get(
+            f"https://image.so.com/j?q={encoded}&sn={attempt * 60}&pn=60",
+            headers={**headers, "Referer": SOURCE_REFERERS["so360"]},
+            timeout=12,
+        )
+        res.raise_for_status()
+        items = res.json().get("list") or []
+        return [item.get("img") for item in items if str(item.get("img", "")).startswith("http")]
+
+    if source == "baidu":
+        driver.get(f"https://image.baidu.com/search/index?tn=baiduimage&word={encoded}")
+        time.sleep(3)
+        for _ in range(attempt + 1):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+        urls = driver.execute_script("""
+            const out = [];
+            for (const im of document.querySelectorAll('img')) {
+              const s = im.getAttribute('data-imgurl') || im.currentSrc || im.src || '';
+              // 跳过“相关搜索”等 60px 小图标，只要真正的搜索结果图
+              if (/^https?:\\/\\/img\\d*\\.baidu\\.com\\/it\\/u=/.test(s) && im.naturalWidth >= 200) out.push(s);
+            }
+            return out;
+        """)
+        return list(dict.fromkeys(urls))
+
+    # looksmax / bing：解析 Bing 图片结果里的原图地址
+    driver.get(f"https://www.bing.com/images/search?q={encoded}")
+    time.sleep(3)
+    for _ in range(attempt + 1):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+    img_urls = []
+    for elem in driver.find_elements(By.CSS_SELECTOR, "a.iusc"):
+        m_attr = elem.get_attribute("m")
+        if not m_attr:
+            continue
+        match = re.search(r'"murl":"(https?://[^"]+)"', m_attr)
+        if not match:
+            continue
+        url = unquote(match.group(1))
+        if "bing.com" in url:
+            continue
+        # looksmax 结果沿用原来的扩展名过滤；全网结果很多原图链接不带扩展名
+        if source == "looksmax" and not any(ext in url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+            continue
+        img_urls.append(url)
+    return list(dict.fromkeys(img_urls))
+
+
 def check_image_matches_metric(image_path, prob_threshold=0.5):
     """
     高精度 CLIP 统一质检：
@@ -238,10 +369,13 @@ def crawl_all_63_metrics_bing_clip(
     target_count_per_category=20,
     base_save_dir=str(Path(__file__).resolve().parent),
     clip_threshold=0.5,
+    source="looksmax",
 ):
     """
-    使用 Bing 元素解析搜索 + 高精度 CLIP 质检全自动抓取 63 个美学指标。
+    按所选搜索来源收集候选图片 + 高精度 CLIP 质检全自动抓取。
     """
+    source_label = SEARCH_SOURCES[source]
+    print(f"🔎 搜索来源：{source_label}")
     if not os.path.exists(base_save_dir):
         os.makedirs(base_save_dir)
 
@@ -291,35 +425,32 @@ def crawl_all_63_metrics_bing_clip(
             page_scroll_attempts = 0
             max_scrolls = 6
             
+            keyword = build_search_query(keyword, source)
+            if source in CHINESE_SOURCES:
+                hint = None if level == "search" else f"{chinese_metric_name}：{level_desc}"
+                keyword = translate_query_to_chinese(keyword, hint)
+            seen_urls = set()
             while success_count < target_count_per_category and page_scroll_attempts < max_scrolls:
-                print(f"\n🚀 目标级别 [{level_folder_name} -> {level_desc}] -> 当前进度: {success_count}/{target_count_per_category} 张，正在通过 Bing 搜索...")
-                
-                encoded_keyword = quote(keyword)
-                search_url = f"https://www.bing.com/images/search?q={encoded_keyword}"
-                driver.get(search_url)
-                time.sleep(3)
+                print(f"\n🚀 目标级别 [{level_folder_name} -> {level_desc}] -> 当前进度: {success_count}/{target_count_per_category} 张，正在通过 {source_label} 搜索「{keyword}」...")
 
-                for _ in range(page_scroll_attempts + 1):
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(2)
-
-                img_urls = set()
                 try:
-                    thumb_elements = driver.find_elements(By.CSS_SELECTOR, "a.iusc")
-                    for elem in thumb_elements:
-                        m_attr = elem.get_attribute("m")
-                        if m_attr:
-                            match = re.search(r'"murl":"(https?://[^"]+)"', m_attr)
-                            if match:
-                                url = unquote(match.group(1))
-                                if "bing.com" not in url:
-                                    if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                                        img_urls.add(url)
+                    candidates = collect_candidate_urls(driver, source, keyword, page_scroll_attempts, headers)
                 except Exception as e:
-                    print(f"   [警告] 解析页面元素时出错: {e}")
-
-                final_urls = list(img_urls)
-                print(f"   Bing 成功解析到候选链接 {len(final_urls)} 个，开始高精度 CLIP 模型逐一质检...")
+                    print(f"   [警告] 获取搜索结果时出错: {e}")
+                    candidates = []
+                if not candidates and page_scroll_attempts == 0 and source in CHINESE_SOURCES and level != "search":
+                    # 中文图片站对专业描述常常搜不到：退回到“指标名 + 级别”这种最直白的关键词
+                    fallback = f"{chinese_metric_name} {level_desc}"
+                    print(f"   [提示] 「{keyword}」没有结果，改用「{fallback}」重新搜索。")
+                    keyword = fallback
+                    try:
+                        candidates = collect_candidate_urls(driver, source, keyword, page_scroll_attempts, headers)
+                    except Exception as e:
+                        print(f"   [警告] 获取搜索结果时出错: {e}")
+                        candidates = []
+                final_urls = [url for url in candidates if url not in seen_urls]
+                seen_urls.update(final_urls)
+                print(f"   {source_label} 解析到新的候选链接 {len(final_urls)} 个，开始高精度 CLIP 模型逐一质检...")
 
                 old_success_count = success_count
 
@@ -330,12 +461,16 @@ def crawl_all_63_metrics_bing_clip(
                         break
 
                     try:
-                        res = requests.get(url, headers=headers, timeout=8)
-                        if res.status_code == 200 and len(res.content) > 18000:
+                        download_headers = dict(headers)
+                        if source in SOURCE_REFERERS:
+                            download_headers["Referer"] = SOURCE_REFERERS[source]
+                        res = requests.get(url, headers=download_headers, timeout=8)
+                        content_type = res.headers.get("Content-Type", "").lower()
+                        if res.status_code == 200 and len(res.content) > 18000 and not content_type.startswith("text/"):
                             ext = "jpg"
                             url_lower = url.lower()
-                            if ".png" in url_lower: ext = "png"
-                            elif ".webp" in url_lower: ext = "webp"
+                            if ".png" in url_lower or "png" in content_type: ext = "png"
+                            elif ".webp" in url_lower or "webp" in content_type: ext = "webp"
                             elif ".jpeg" in url_lower: ext = "jpeg"
 
                             temp_filename = os.path.join(level_dir, f"temp_{time.time()}_{success_count}.{ext}")
@@ -370,7 +505,7 @@ def crawl_all_63_metrics_bing_clip(
                 )
 
     driver.quit()
-    print(f"\n🎉 全部 63 个美学指标数据集采集流程圆满结束！\n📁 有效数据集保存在: {base_save_dir}")
+    print(f"\n🎉 图片采集流程结束！\n📁 图片保存在: {base_save_dir}")
 
 
 if __name__ == "__main__":
@@ -447,6 +582,12 @@ if __name__ == "__main__":
     parser.add_argument("--rewritten-query-high", help="改写后的 high 搜索词")
     parser.add_argument("--rewritten-query-low", help="改写后的 low 搜索词")
     parser.add_argument("--custom-topic", help="使用自定义搜索话题")
+    parser.add_argument(
+        "--source",
+        choices=list(SEARCH_SOURCES),
+        default="looksmax",
+        help="图片搜索来源：looksmax（默认）、bing 全网、baidu 百度图片、so360 360 图片",
+    )
     parser.add_argument("--target-count", type=int, default=20, help="每个级别目标图片数")
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="CLIP 严格度阈值，范围 0.01-0.99")
     parser.add_argument(
@@ -485,8 +626,11 @@ if __name__ == "__main__":
         custom_topic = args.custom_topic.strip()
         if not custom_topic:
             parser.error("--custom-topic 不能为空")
-        custom_topic = translate_custom_topic_if_needed(custom_topic)
-        print(f"[INFO] 最终生效的搜索词 (English): {custom_topic}")
+        if args.source == "looksmax":
+            custom_topic = translate_custom_topic_if_needed(custom_topic)
+            print(f"[INFO] 最终生效的搜索词 (English): {custom_topic}")
+        else:
+            print(f"[INFO] 搜索词（{SEARCH_SOURCES[args.source]}，不翻译）: {custom_topic}")
         selected_metrics = {
             safe_path_component(custom_topic): {
                 "search": {"query": custom_topic, "desc": "搜索结果"}
@@ -521,4 +665,5 @@ if __name__ == "__main__":
         target_count_per_category=args.target_count,
         base_save_dir=args.output_dir,
         clip_threshold=args.clip_threshold,
+        source=args.source,
     )

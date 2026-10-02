@@ -21,10 +21,13 @@ from urllib.parse import parse_qs, urlsplit
 from xiaohongshu_publisher.copywriter import generate_copywriting
 from xiaohongshu_publisher.image_loader import build_post_images, candidate_key, list_candidate_images
 from xiaohongshu_publisher.publisher import (
+    BROWSERS,
+    DEFAULT_BROWSER,
     PublisherEditorNotFound,
     PublisherManualIntervention,
     browser_alive,
     click_publish,
+    installed_browsers,
     open_filled_draft,
 )
 
@@ -320,6 +323,15 @@ PAGE = r"""<!doctype html>
             <option value="private">仅自己可见（private）</option>
           </select>
         </div>
+        <div class="field">
+          <label for="publisher-browser">发布使用的浏览器</label>
+          <select id="publisher-browser" class="browser-select">
+            <option value="edge">Microsoft Edge（默认）</option>
+            <option value="chrome">Google Chrome</option>
+            <option value="firefox">Firefox</option>
+          </select>
+          <p class="help">每种浏览器第一次使用时都需要在弹出的窗口里登录一次小红书。</p>
+        </div>
         <label class="check-row"><input type="checkbox" id="publisher-auto-click" checked> 填好后自动点击“发布”</label>
         <div class="publisher-actions">
           <button type="button" class="item-action" id="regenerate-publisher">换一组图片和文案</button>
@@ -352,6 +364,15 @@ PAGE = r"""<!doctype html>
             <option value="public">公开（public）</option>
             <option value="private">仅自己可见（private）</option>
           </select>
+        </div>
+        <div class="field">
+          <label for="auto-browser">发布使用的浏览器</label>
+          <select id="auto-browser" class="browser-select">
+            <option value="edge">Microsoft Edge（默认）</option>
+            <option value="chrome">Google Chrome</option>
+            <option value="firefox">Firefox</option>
+          </select>
+          <p class="help">每种浏览器第一次使用时都需要在弹出的窗口里登录一次小红书。</p>
         </div>
         <div class="field">
           <span class="field-label" id="auto-interval-label">发布间隔</span>
@@ -462,6 +483,16 @@ PAGE = r"""<!doctype html>
         <input id="custom-topic" type="text" maxlength="240" placeholder="例如：帅气男生侧脸写真">
         <p class="help">这个词会直接用来搜图片，也会作为保存文件夹的名字。</p>
       </div>
+      <div class="field">
+        <label for="search-source">图片搜索来源</label>
+        <select id="search-source">
+          <option value="looksmax">looksmax.org（外貌讨论站，适合外貌特征）</option>
+          <option value="bing">Bing 全网图片</option>
+          <option value="baidu">百度图片（适合国内明星）</option>
+          <option value="so360">360 图片（国内）</option>
+        </select>
+        <p class="help" id="search-source-help"></p>
+      </div>
     </section>
     <section class="panel">
       <h2>2. 设置挑选和保存要求</h2>
@@ -535,6 +566,17 @@ let publisherTimer = null;
 let rewrittenMetric = null;
 let rewrittenQueries = null;
 
+const SEARCH_SOURCE_HELP = {
+  looksmax: "在 looksmax.org 站内搜索；中文搜索词会先翻译成英文。",
+  bing: "在 Bing 搜索全网图片，搜索词不做翻译。",
+  baidu: "在百度图片搜索；所有搜索词会先翻译成中文，适合搜索国内明星。",
+  so360: "在 360 图片搜索；所有搜索词会先翻译成中文。",
+};
+function updateSearchSourceHelp() {
+  const source = document.getElementById("search-source").value;
+  document.getElementById("search-source-help").textContent = SEARCH_SOURCE_HELP[source];
+}
+document.getElementById("search-source").addEventListener("change", updateSearchSourceHelp);
 function updateMode() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
   const manual = mode === "metrics";
@@ -651,7 +693,13 @@ document.getElementById("clear-token").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
-document.querySelectorAll('input[name="mode"]').forEach(item => item.addEventListener("change", updateMode));
+document.querySelectorAll('input[name="mode"]').forEach(item => item.addEventListener("change", () => {
+  // 切换模式时给出推荐来源：外貌特征用 looksmax，自定义关键词用百度
+  document.getElementById("search-source").value = item.value === "custom" ? "baidu" : "looksmax";
+  updateSearchSourceHelp();
+  updateMode();
+}));
+updateSearchSourceHelp();
 document.getElementById("threshold").addEventListener("input", updateThreshold);
 metricFilter.addEventListener("input", filterMetrics);
 document.getElementById("rewrite-query").addEventListener("click", async () => {
@@ -974,6 +1022,24 @@ async function loadPublisherCandidates() {
     if (requestId === publisherCandidateRequest) help.textContent = `读取图片列表失败：${error.message}`;
   }
 }
+const BROWSER_STORAGE_KEY = "publisherBrowser";
+function renderBrowserOptions(installed) {
+  let saved = null;
+  try { saved = localStorage.getItem(BROWSER_STORAGE_KEY); } catch (error) {}
+  for (const select of document.querySelectorAll(".browser-select")) {
+    for (const option of select.options) {
+      const ok = installed.includes(option.value);
+      option.disabled = !ok;
+      option.textContent = option.textContent.replace("（未安装）", "") + (ok ? "" : "（未安装）");
+    }
+    const preferred = [saved, "edge", ...installed].find(value => value && installed.includes(value));
+    if (preferred) select.value = preferred;
+  }
+}
+document.querySelectorAll(".browser-select").forEach(select => select.addEventListener("change", () => {
+  try { localStorage.setItem(BROWSER_STORAGE_KEY, select.value); } catch (error) {}
+  document.querySelectorAll(".browser-select").forEach(other => { other.value = select.value; });
+}));
 async function loadPublisherFolders() {
   const select = document.getElementById("publisher-folder");
   select.replaceChildren();
@@ -987,6 +1053,7 @@ async function loadPublisherFolders() {
     publisherFolders = data.folders;
     updatePublisherMode();
     updateAutoFolders();
+    renderBrowserOptions(data.browsers || []);
   } catch (error) {
     document.getElementById("publisher-state").textContent = `读取图片文件夹失败：${error.message}`;
   }
@@ -1077,6 +1144,7 @@ document.getElementById("open-publisher").addEventListener("click", async event 
         title:document.getElementById("publisher-title").value,
         content:document.getElementById("publisher-content").value,
         visibility:document.getElementById("publisher-visibility").value,
+        browser:document.getElementById("publisher-browser").value,
         auto_publish:document.getElementById("publisher-auto-click").checked
       })
     });
@@ -1250,6 +1318,7 @@ document.getElementById("auto-start").addEventListener("click", async () => {
         count:Number(document.getElementById("auto-count").value),
         prompt:document.getElementById("auto-prompt").value,
         visibility,
+        browser:document.getElementById("auto-browser").value,
         interval:autoIntervalSeconds(),
         target
       })
@@ -1297,6 +1366,7 @@ form.addEventListener("submit", async event => {
     metrics: selectedMetrics,
     rewritten_queries: rewrittenMetric === selectedMetrics[0] ? rewrittenQueries : null,
     custom_topic: document.getElementById("custom-topic").value.trim(),
+    source: document.getElementById("search-source").value,
     threshold: Number(document.getElementById("threshold").value),
     target_count: Number(document.getElementById("target-count").value),
     output_dir: document.getElementById("output-dir").value.trim()
@@ -1382,6 +1452,14 @@ def list_managed_directory(relative_path: str) -> dict[str, Any]:
         "folders": sorted(folders, key=lambda item: item["name"].casefold()),
         "images": sorted(images, key=lambda item: item["name"].casefold()),
     }
+
+
+def validate_browser(browser: Any) -> str:
+    if browser not in BROWSERS:
+        raise ValueError("请选择有效的发布浏览器。")
+    if browser not in installed_browsers():
+        raise ValueError(f"本机没有安装 {BROWSERS[browser]['label']}，请换一个浏览器。")
+    return browser
 
 
 def validate_publisher_folder(mode: Any, folder: Any) -> Path:
@@ -1580,6 +1658,7 @@ def run_publisher_browser(
     content: str,
     visibility: str,
     auto_publish: bool,
+    browser: str,
 ) -> None:
     global publisher_driver
 
@@ -1594,7 +1673,7 @@ def run_publisher_browser(
             publisher_driver = driver
 
     try:
-        driver = open_filled_draft(image_paths, title, content, visibility, update_status, register_driver)
+        driver = open_filled_draft(image_paths, title, content, visibility, update_status, register_driver, browser)
         if auto_publish:
             click_publish(driver, update_status)
     except PublisherEditorNotFound as exc:
@@ -1686,7 +1765,9 @@ def run_auto_publisher(config: dict[str, Any]) -> None:
                 with publisher_lock:
                     auto_state["message"] = f"第 {round_no} 篇：{message}"
 
-            driver = open_filled_draft(images, copy["title"], copy["content"], config["visibility"], update_status)
+            driver = open_filled_draft(
+                images, copy["title"], copy["content"], config["visibility"], update_status, browser=config["browser"]
+            )
             click_publish(driver, update_status)
             published += 1
             failures = 0
@@ -1900,7 +1981,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             self.send_json({"error": f"读取图片文件夹失败：{exc}"}, 500)
             return
-        self.send_json({"folders": folders})
+        self.send_json({"folders": folders, "browsers": installed_browsers()})
 
     def prepare_publisher_draft(self) -> None:
         global publisher_draft
@@ -2024,6 +2105,7 @@ class Handler(BaseHTTPRequestHandler):
             count = payload.get("count")
             prompt = payload.get("prompt", "")
             visibility = payload.get("visibility", "public")
+            browser = validate_browser(payload.get("browser", DEFAULT_BROWSER))
             interval = payload.get("interval")
             target = payload.get("target", 0)
             if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 8:
@@ -2053,6 +2135,7 @@ class Handler(BaseHTTPRequestHandler):
             "count": count,
             "prompt": prompt,
             "visibility": visibility,
+            "browser": browser,
             "interval": interval,
             "target": target,
         }
@@ -2131,6 +2214,7 @@ class Handler(BaseHTTPRequestHandler):
             content = payload.get("content")
             visibility = payload.get("visibility", "public")
             auto_publish = payload.get("auto_publish", False)
+            browser = validate_browser(payload.get("browser", DEFAULT_BROWSER))
             if visibility not in {"public", "private"}:
                 raise ValueError("可见范围只能是 public 或 private。")
             if not isinstance(auto_publish, bool):
@@ -2164,7 +2248,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         worker = threading.Thread(
             target=run_publisher_browser,
-            args=(image_paths, title.strip(), content.strip(), visibility, auto_publish),
+            args=(image_paths, title.strip(), content.strip(), visibility, auto_publish, browser),
             daemon=True,
         )
         worker.start()
@@ -2333,6 +2417,9 @@ class Handler(BaseHTTPRequestHandler):
         output_dir = payload.get("output_dir") or str(DEFAULT_OUTPUT)
         if mode not in {"metrics", "custom"}:
             raise ValueError("请选择指标改写或自定义话题模式。")
+        source = payload.get("source", "looksmax")
+        if source not in {"looksmax", "bing", "baidu", "so360"}:
+            raise ValueError("请选择有效的图片搜索来源。")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.35 <= threshold <= 0.95:
             raise ValueError("CLIP 严格度必须在 0.35 到 0.95 之间。")
         if isinstance(target_count, bool) or not isinstance(target_count, int) or not 1 <= target_count <= 1000:
@@ -2347,6 +2434,8 @@ class Handler(BaseHTTPRequestHandler):
             str(target_count),
             "--clip-threshold",
             f"{threshold:.2f}",
+            "--source",
+            source,
             "--output-dir",
             str(
                 (ROOT / Path(output_dir).expanduser()).resolve()

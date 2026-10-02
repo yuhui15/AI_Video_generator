@@ -5,8 +5,13 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import os
+import shutil
+
 import psutil
 import undetected_chromedriver as uc
+from selenium import webdriver
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
@@ -14,8 +19,32 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 CREATOR_URL = "https://creator.xiaohongshu.com/publish/publish"
-PROFILE_DIR = Path(__file__).resolve().parent / ".browser_profile"
+PUBLISHER_DIR = Path(__file__).resolve().parent
 CHROME_START_TIMEOUT = 90
+DEFAULT_BROWSER = "edge"
+_PROGRAM_FILES = [os.environ.get("PROGRAMFILES", r"C:\Program Files"), os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), os.environ.get("LOCALAPPDATA", "")]
+# 每种浏览器使用独立的登录目录（Chrome 沿用原来的 .browser_profile，已登录状态不丢）
+BROWSERS = {
+    "edge": {
+        "label": "Microsoft Edge",
+        "profile": PUBLISHER_DIR / ".browser_profile_edge",
+        "process": "msedge",
+        "exe": [Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe" for base in _PROGRAM_FILES if base],
+    },
+    "chrome": {
+        "label": "Google Chrome",
+        "profile": PUBLISHER_DIR / ".browser_profile",
+        "process": "chrome",
+        "exe": [Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe" for base in _PROGRAM_FILES if base],
+    },
+    "firefox": {
+        "label": "Firefox",
+        "profile": PUBLISHER_DIR / ".browser_profile_firefox",
+        "process": "firefox",
+        "exe": [Path(base) / "Mozilla Firefox" / "firefox.exe" for base in _PROGRAM_FILES if base],
+    },
+}
+PROFILE_DIR = BROWSERS["chrome"]["profile"]   # 兼容旧代码
 
 
 class PublisherEditorNotFound(RuntimeError):
@@ -37,9 +66,10 @@ def open_filled_draft(
     visibility: str,
     status_callback: Callable[[str], None],
     driver_callback: Callable[[uc.Chrome], None] | None = None,
+    browser: str = DEFAULT_BROWSER,
 ) -> uc.Chrome:
-    status_callback("正在启动浏览器。")
-    driver = _start_chrome()
+    status_callback(f"正在启动 {BROWSERS[browser]['label']}。")
+    driver = _start_browser(browser)
     # 用户中途关掉浏览器时，页面加载不能一直卡着（默认 300 秒）。
     driver.set_page_load_timeout(60)
     if driver_callback is not None:
@@ -154,18 +184,44 @@ def open_filled_draft(
         raise RuntimeError(f"草稿准备失败：{exc}") from exc
 
 
-def _start_chrome() -> uc.Chrome:
+def installed_browsers() -> list[str]:
+    """返回本机已安装、可用于发布的浏览器。"""
+    found = []
+    for key, info in BROWSERS.items():
+        if any(path.is_file() for path in info["exe"]) or shutil.which(f"{info['process']}.exe"):
+            found.append(key)
+    return found
+
+
+def _start_browser(browser: str):
+    if browser not in BROWSERS:
+        raise RuntimeError(f"不支持的浏览器：{browser}")
+    if browser not in installed_browsers():
+        raise RuntimeError(f"本机没有安装 {BROWSERS[browser]['label']}，请换一个浏览器或先安装它。")
     # 上次残留的专用浏览器会占着配置目录，新浏览器启动时会无限等待，先清掉。
-    close_stale_browsers()
+    close_stale_browsers(browser)
     box: dict[str, object] = {}
 
     def start() -> None:
         try:
-            try:
-                box["driver"] = uc.Chrome(options=_chrome_options(), version_main=153)
-            except Exception:
-                # uc 不允许复用同一个 ChromeOptions，重试时必须新建。
-                box["driver"] = uc.Chrome(options=_chrome_options())
+            if browser == "chrome":
+                try:
+                    box["driver"] = uc.Chrome(options=_chrome_options(), version_main=153)
+                except Exception:
+                    # uc 不允许复用同一个 ChromeOptions，重试时必须新建。
+                    box["driver"] = uc.Chrome(options=_chrome_options())
+            elif browser == "edge":
+                driver = webdriver.Edge(options=_edge_options())
+                # 隐藏 navigator.webdriver，减少被识别为自动化浏览器
+                driver.execute_cdp_cmd(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+                )
+                box["driver"] = driver
+            else:
+                driver = webdriver.Firefox(options=_firefox_options())
+                driver.maximize_window()
+                box["driver"] = driver
         except BaseException as exc:
             box["error"] = exc
 
@@ -173,31 +229,62 @@ def _start_chrome() -> uc.Chrome:
     worker.start()
     worker.join(CHROME_START_TIMEOUT)
     if worker.is_alive():
-        close_stale_browsers()
+        close_stale_browsers(browser)
         raise RuntimeError("浏览器启动超时（可能在启动过程中被关闭），请重新点击。")
     if "error" in box:
         raise RuntimeError(f"浏览器启动失败：{box['error']}")
     return box["driver"]  # type: ignore[return-value]
 
 
-def close_stale_browsers() -> None:
-    """结束所有使用本工具专用配置目录的 Chrome 进程（不影响用户日常使用的 Chrome）。"""
-    marker = str(PROFILE_DIR).lower()
+def close_stale_browsers(browser: str | None = None) -> None:
+    """结束使用本工具专用登录目录的浏览器进程（不影响你日常使用的浏览器）。
+
+    browser 为 None 时清理所有浏览器的专用目录。
+    """
+    targets = [browser] if browser else list(BROWSERS)
+    rules = [(BROWSERS[key]["process"], str(BROWSERS[key]["profile"]).lower()) for key in targets]
     for process in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (process.info["name"] or "").lower()
             cmdline = " ".join(process.info["cmdline"] or []).lower()
-            if name.startswith("chrome") and f"--user-data-dir={marker}" in cmdline:
-                process.kill()
+            for prefix, profile in rules:
+                # Chrome/Edge 用 --user-data-dir=目录，Firefox 用 -profile 目录
+                if name.startswith(prefix) and (f"--user-data-dir={profile}" in cmdline or f"-profile {profile}" in cmdline):
+                    process.kill()
+                    break
         except psutil.Error:
             continue
 
 
 def _chrome_options() -> uc.ChromeOptions:
     options = uc.ChromeOptions()
-    options.add_argument(f"--user-data-dir={PROFILE_DIR}")
+    options.add_argument(f"--user-data-dir={BROWSERS['chrome']['profile']}")
     options.add_argument("--start-maximized")
     return options
+
+
+def _edge_options() -> webdriver.EdgeOptions:
+    options = webdriver.EdgeOptions()
+    options.add_argument(f"--user-data-dir={BROWSERS['edge']['profile']}")
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    return options
+
+
+def _firefox_options() -> webdriver.FirefoxOptions:
+    profile = BROWSERS["firefox"]["profile"]
+    profile.mkdir(parents=True, exist_ok=True)
+    options = webdriver.FirefoxOptions()
+    options.add_argument("-profile")
+    options.add_argument(str(profile))
+    options.set_preference("dom.webdriver.enabled", False)
+    return options
+
+
+def _is_chromium(driver) -> bool:
+    return str(driver.capabilities.get("browserName", "")).lower() in {"chrome", "msedge", "microsoftedge"}
 
 
 def browser_alive(driver: uc.Chrome) -> bool:
@@ -283,17 +370,23 @@ def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> 
         PUBLISH_BUTTON_OFFSET_X,
     )
     # 点击前先确认该坐标下确实是红色“发布”按钮，避免页面改版后点错（比如点到“暂存离开”）。
-    target = _describe_node_at(driver, x, y)
-    if target.get("nodeName") != "BUTTON" or "bg-red" not in target.get("class", ""):
-        raise RuntimeError(f"“发布”按钮位置与预期不符（该位置是 {target or '空'}），已停止，未点击。")
+    if _is_chromium(driver):
+        target = _describe_node_at(driver, x, y)
+        if target.get("nodeName") != "BUTTON" or "bg-red" not in target.get("class", ""):
+            raise RuntimeError(f"“发布”按钮位置与预期不符（该位置是 {target or '空'}），已停止，未点击。")
+    else:
+        # Firefox 没有 CDP，看不到封闭 Shadow DOM 内部；至少确认坐标落在发布按钮组件上
+        on_host = driver.execute_script(
+            "const el = document.elementFromPoint(arguments[0], arguments[1]);"
+            "return !!el && el.tagName.toLowerCase() === arguments[2];",
+            x, y, PUBLISH_HOST_SELECTOR,
+        )
+        if not on_host:
+            raise RuntimeError("“发布”按钮位置与预期不符，已停止，未点击。")
     # 偶尔点击后页面毫无反应（按钮没进入 loading），所以没反应时重点；一旦开始发布就只等待，绝不重复点击。
     for attempt in range(1, PUBLISH_CLICK_ATTEMPTS + 1):
         status_callback("正在点击“发布”。" if attempt == 1 else f"点击后无反应，第 {attempt} 次点击“发布”。")
-        for event in ("mouseMoved", "mousePressed", "mouseReleased"):
-            driver.execute_cdp_cmd(
-                "Input.dispatchMouseEvent",
-                {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
-            )
+        _click_at(driver, x, y)
         if _wait_publish_started(driver, PUBLISH_REACTION_SECONDS):
             break
     else:
@@ -302,6 +395,21 @@ def click_publish(driver: uc.Chrome, status_callback: Callable[[str], None]) -> 
         WebDriverWait(driver, 60).until(_publish_finished)
     except TimeoutException as exc:
         raise RuntimeError("已点击“发布”，但 60 秒内未看到发布成功提示，请到小红书检查。") from exc
+
+
+def _click_at(driver, x: float, y: float) -> None:
+    """在视口坐标处发送真实鼠标点击（能点到封闭 Shadow DOM 里的按钮）。"""
+    if _is_chromium(driver):
+        for event in ("mouseMoved", "mousePressed", "mouseReleased"):
+            driver.execute_cdp_cmd(
+                "Input.dispatchMouseEvent",
+                {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
+            )
+        return
+    actions = ActionBuilder(driver)
+    actions.pointer_action.move_to_location(int(x), int(y))
+    actions.pointer_action.click()
+    actions.perform()
 
 
 def _wait_publish_started(driver: uc.Chrome, seconds: float) -> bool:
